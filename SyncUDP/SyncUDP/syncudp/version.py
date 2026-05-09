@@ -1,2 +1,2 @@
 # Auto-updated by CI from Git tags. You can manually bump this as a fallback.
-VERSION = "0.0.49"
+VERSION = "0.0.50"

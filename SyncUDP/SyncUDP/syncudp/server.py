@@ -658,7 +658,7 @@ async def current_track() -> dict:
                     ma_title = ma_meta.get("title")
                     
                     is_lagging = ma_artist and ma_title and (ma_artist != scoped.get("artist") or ma_title != scoped.get("title"))
-                    
+
                     for key in ("position", "duration_ms", "is_playing"):
                         value = ma_meta.get(key)
                         if value is not None:
@@ -667,6 +667,15 @@ async def current_track() -> dict:
                                     scoped[key] = 0.0
                                 continue
                             scoped[key] = value
+                        elif key == "position" and is_lagging:
+                            # MA reports a *new* track but no position yet (it
+                            # hasn't published its first state for the new
+                            # item). The recognition engine's position is
+                            # still elapsed time on the previous track —
+                            # leaking it here makes the UI show e.g. 1:48
+                            # while MA actually shows 0:30. Reset to 0 until
+                            # MA publishes a real position next poll.
+                            scoped[key] = 0.0
                     
                     if ma_artist and ma_title:
                         scoped["artist"] = ma_artist

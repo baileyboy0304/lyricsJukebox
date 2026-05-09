@@ -16,6 +16,22 @@ import requests
 from pathlib import Path
 from typing import Optional, Dict, Any, List
 
+# Tracks the last identity we logged a "Hybrid Override" line for, so the
+# log doesn't spam every poll while the recognition engine is catching up.
+# Format: { "single": "artist::title", "pm": "artist::title" }
+_HYBRID_OVERRIDE_LAST_LOGGED: Dict[str, str] = {}
+
+
+def _hybrid_override_should_log(scope: str, ma_artist: str, ma_title: str) -> bool:
+    """Return True only when the (scope, artist, title) tuple changes."""
+    key = f"{(ma_artist or '').strip()}::{(ma_title or '').strip()}"
+    if not key.strip(':'):
+        return False
+    if _HYBRID_OVERRIDE_LAST_LOGGED.get(scope) == key:
+        return False
+    _HYBRID_OVERRIDE_LAST_LOGGED[scope] = key
+    return True
+
 import config
 from . import state
 from .state import ACTIVE_INTERVAL, IDLE_INTERVAL, IDLE_WAIT_TIME
@@ -279,7 +295,8 @@ async def get_current_song_meta_data() -> Optional[dict]:
                                             result["duration_ms"] = ma_meta.get("duration_ms")
                                             
                                         result["_ma_overridden"] = True
-                                        logger.info(f"Hybrid Override: Fast-forwarding identity to '{ma_artist} - {ma_title}' from Music Assistant")
+                                        if _hybrid_override_should_log("single", ma_artist, ma_title):
+                                            logger.info(f"Hybrid Override: Fast-forwarding identity to '{ma_artist} - {ma_title}' from Music Assistant")
                         except Exception as e:
                             import logging
                             logging.getLogger(__name__).debug(f"MA hybrid override failed: {e}")
@@ -427,7 +444,8 @@ async def get_current_song_meta_data() -> Optional[dict]:
                                             pm_result["duration_ms"] = ma_meta.get("duration_ms")
                                             
                                         pm_result["_ma_overridden"] = True
-                                        logger.info(f"Hybrid Override (PM): Fast-forwarding identity to '{ma_artist} - {ma_title}' from Music Assistant")
+                                        if _hybrid_override_should_log("pm", ma_artist, ma_title):
+                                            logger.info(f"Hybrid Override (PM): Fast-forwarding identity to '{ma_artist} - {ma_title}' from Music Assistant")
                         except Exception as e:
                             import logging
                             logging.getLogger(__name__).debug(f"MA hybrid override (PM) failed: {e}")
