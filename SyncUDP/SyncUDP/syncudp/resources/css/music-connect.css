@@ -3,8 +3,6 @@
    ========================================================================== */
 
 /* ---------- Bubble icon on the transport lozenge ---------- */
-/* Mirrors the sizing/feel of #btn-queue / #btn-like so the new control
-   blends with the existing transport pill. */
 #btn-music-connect i,
 #btn-music-connect svg {
     font-size: 1.1rem;
@@ -43,35 +41,38 @@
 }
 
 /* ---------- Slide-in side panel ---------- */
+/* Width: true 1/3 of viewport. Min/max guards keep things sane on extremes. */
 .music-connect-panel {
     position: fixed;
     top: 0;
     right: 0;
-    width: 33vw;
-    min-width: 280px;
-    max-width: 520px;
+    width: 33.333vw;
+    min-width: 320px;
+    max-width: 720px;
     height: 100vh;
     height: 100dvh;
     z-index: 1990;
     display: flex;
     flex-direction: column;
-    padding: 18px 16px 24px;
+    padding: 18px 16px 18px;
+    gap: 10px;
 
-    background: rgba(15, 17, 25, 0.55);
+    background: rgba(11, 15, 28, 0.78);
     backdrop-filter: blur(18px) saturate(140%);
     -webkit-backdrop-filter: blur(18px) saturate(140%);
     border-left: 1px solid rgba(255, 255, 255, 0.07);
     box-shadow: -16px 0 48px rgba(0, 0, 0, 0.4);
 
+    /* Important: do not toggle `visibility` — it would skip the slide-out
+       transition. transform-only animation is what makes both directions feel
+       symmetrical. */
     transform: translateX(100%);
     transition: transform 0.32s cubic-bezier(0.4, 0, 0.2, 1);
     pointer-events: auto;
-    visibility: hidden;
 }
 
 .music-connect-panel.open {
     transform: translateX(0);
-    visibility: visible;
 }
 
 .music-connect-header {
@@ -79,9 +80,8 @@
     align-items: flex-start;
     justify-content: space-between;
     gap: 12px;
-    padding-bottom: 14px;
+    padding-bottom: 10px;
     border-bottom: 1px solid rgba(255, 255, 255, 0.08);
-    margin-bottom: 10px;
 }
 
 .music-connect-title-wrap {
@@ -102,7 +102,6 @@
     margin: 0;
     font-size: 1.05rem;
     font-weight: 600;
-    color: white;
     background: linear-gradient(90deg, #9aa9ff, #c98bff);
     -webkit-background-clip: text;
     background-clip: text;
@@ -131,9 +130,72 @@
     color: white;
 }
 
-.music-connect-graph {
+/* ---------- Toolbar (search + explore + show-connections) ---------- */
+.music-connect-toolbar {
+    display: flex;
+    gap: 8px;
+    align-items: center;
+    flex-wrap: wrap;
+}
+
+.music-connect-search-input {
     flex: 1;
-    min-height: 0;
+    min-width: 100px;
+    background: rgba(12, 16, 32, 0.7);
+    border: 1px solid rgba(150, 165, 220, 0.18);
+    color: #eef1fb;
+    padding: 7px 10px;
+    border-radius: 8px;
+    font-size: 0.85rem;
+    outline: none;
+}
+
+.music-connect-search-input:focus {
+    border-color: rgba(125, 141, 255, 0.55);
+}
+
+.music-connect-explore-btn {
+    background: linear-gradient(135deg, #7d8dff, #b56dff);
+    color: white;
+    border: 0;
+    padding: 7px 14px;
+    border-radius: 8px;
+    font-weight: 600;
+    font-size: 0.85rem;
+    cursor: pointer;
+    transition: transform 120ms ease, box-shadow 120ms ease;
+}
+
+.music-connect-explore-btn:hover {
+    transform: translateY(-1px);
+    box-shadow: 0 6px 14px rgba(125, 141, 255, 0.35);
+}
+
+.music-connect-toggle {
+    display: inline-flex;
+    align-items: center;
+    gap: 6px;
+    font-size: 0.78rem;
+    color: rgba(170, 180, 220, 0.85);
+    cursor: pointer;
+    user-select: none;
+    padding: 4px 10px;
+    border: 1px solid rgba(150, 165, 220, 0.18);
+    border-radius: 999px;
+    background: rgba(255, 255, 255, 0.03);
+}
+
+.music-connect-toggle input {
+    accent-color: #7d8dff;
+    width: 13px;
+    height: 13px;
+    cursor: pointer;
+}
+
+/* ---------- Bubble graph viewport ---------- */
+.music-connect-graph {
+    flex: 1 1 60%;
+    min-height: 220px;
     position: relative;
 }
 
@@ -143,6 +205,7 @@
     display: block;
     -webkit-user-select: none;
     user-select: none;
+    touch-action: none;
 }
 
 .mc-active-bubble {
@@ -154,6 +217,10 @@
     stroke-width: 1.5;
     filter: drop-shadow(0 4px 12px rgba(0, 0, 0, 0.35));
     transition: filter 200ms ease;
+}
+
+.mc-bubble {
+    cursor: pointer;
 }
 
 .mc-bubble:hover .mc-related-bubble {
@@ -183,7 +250,6 @@
     font-size: 0.85rem;
     color: rgba(220, 225, 245, 0.8);
     text-align: center;
-    margin-top: 10px;
     min-height: 1.2em;
     display: none;
 }
@@ -192,11 +258,128 @@
     color: #ff8a8a;
 }
 
+/* ---------- Albums / Tracks media panel ---------- */
+.music-connect-media {
+    flex: 0 0 auto;
+    display: grid;
+    grid-template-columns: 1fr 1fr;
+    gap: 10px;
+    height: 36%;
+    min-height: 200px;
+    max-height: 42vh;
+}
+
+.mc-media-column {
+    display: flex;
+    flex-direction: column;
+    min-height: 0;
+    background: rgba(28, 34, 58, 0.55);
+    border: 1px solid rgba(150, 165, 220, 0.18);
+    border-radius: 12px;
+    overflow: hidden;
+}
+
+.mc-media-column h4 {
+    margin: 0;
+    padding: 10px 14px 8px;
+    font-size: 0.7rem;
+    font-weight: 600;
+    letter-spacing: 0.6px;
+    text-transform: uppercase;
+    color: rgba(170, 180, 220, 0.85);
+    border-bottom: 1px solid rgba(150, 165, 220, 0.18);
+}
+
+.mc-media-list {
+    flex: 1;
+    overflow-y: auto;
+    -webkit-overflow-scrolling: touch;
+    overscroll-behavior: contain;
+    touch-action: pan-y;
+    padding: 8px;
+    display: flex;
+    flex-direction: column;
+    gap: 6px;
+    scrollbar-width: thin;
+    scrollbar-color: rgba(150, 165, 220, 0.3) transparent;
+}
+
+.mc-media-list::-webkit-scrollbar { width: 6px; }
+.mc-media-list::-webkit-scrollbar-thumb { background: rgba(150, 165, 220, 0.25); border-radius: 4px; }
+.mc-media-list::-webkit-scrollbar-track { background: transparent; }
+
+.mc-card {
+    display: flex;
+    gap: 10px;
+    align-items: center;
+    background: rgba(255, 255, 255, 0.03);
+    border: 1px solid rgba(150, 165, 220, 0.18);
+    padding: 8px 10px;
+    border-radius: 10px;
+    transition: background 150ms ease, border-color 150ms ease, transform 150ms ease;
+}
+
+.mc-card:hover {
+    background: rgba(255, 255, 255, 0.06);
+    border-color: rgba(150, 165, 220, 0.32);
+    transform: translateY(-1px);
+}
+
+.mc-card-body {
+    flex: 1;
+    min-width: 0;
+}
+
+.mc-card-title {
+    font-size: 0.85rem;
+    font-weight: 600;
+    white-space: nowrap;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    color: #eef1fb;
+}
+
+.mc-card-sub {
+    font-size: 0.72rem;
+    color: rgba(170, 180, 220, 0.85);
+    margin-top: 2px;
+    white-space: nowrap;
+    overflow: hidden;
+    text-overflow: ellipsis;
+}
+
+.mc-play-btn {
+    border: 0;
+    background: linear-gradient(135deg, #7d8dff, #b56dff);
+    color: white;
+    border-radius: 999px;
+    width: 32px;
+    height: 32px;
+    cursor: pointer;
+    flex-shrink: 0;
+    font-size: 0.8rem;
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    box-shadow: 0 4px 10px rgba(125, 141, 255, 0.35);
+    transition: transform 120ms ease, box-shadow 120ms ease;
+}
+
+.mc-play-btn:hover {
+    transform: scale(1.08);
+    box-shadow: 0 6px 14px rgba(125, 141, 255, 0.55);
+}
+
+.mc-empty {
+    color: rgba(170, 180, 220, 0.7);
+    font-size: 0.8rem;
+    text-align: center;
+    padding: 14px 8px;
+}
+
 /* ---------- Lyrics shifts left when MCU is open ---------- */
-/* The MCU panel reserves the right-most third of the viewport, so the
-   lyrics column is squeezed into the remaining 2/3 to avoid overlap. */
 body.music-connect-open #lyrics {
-    width: 67%;
+    width: 66.666%;
     max-width: none;
     margin: 0 auto 0 0;
     padding-left: clamp(1rem, 4vw, 3rem);
@@ -206,8 +389,15 @@ body.music-connect-open #lyrics {
 }
 
 body.music-connect-open #player-ui-container {
-    right: 33vw;
+    right: 33.333vw;
     transition: right 0.32s cubic-bezier(0.4, 0, 0.2, 1);
+}
+
+/* Cap the player-ui shift to match the panel max-width */
+@media (min-width: 2160px) {
+    body.music-connect-open #player-ui-container {
+        right: 720px;
+    }
 }
 
 #lyrics,
@@ -232,5 +422,10 @@ body.music-connect-open #player-ui-container {
 
     body.music-connect-open #player-ui-container {
         right: 0;
+    }
+
+    .music-connect-media {
+        grid-template-columns: 1fr;
+        max-height: 50vh;
     }
 }
