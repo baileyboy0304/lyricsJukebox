@@ -2376,19 +2376,35 @@ async def music_connect_play_media():
     if not media_uri:
         return jsonify({"error": "uri required"}), 400
     try:
-        ma_player_id = await _resolve_ma_player_id_for_request()
+        ma_source = await _music_assistant_source_for_controls()
     except RuntimeError as exc:
         return jsonify({"error": str(exc)}), 400
+    # MA's `player_queues/play_media` requires the active queue_id, which is
+    # not always identical to the player_id. Resolve via the SDK helper.
+    queue_id = await ma_source._resolve_queue_id()
+    if not queue_id:
+        return jsonify({"error": "Music Assistant queue not available for the linked player"}), 400
     try:
-        result = await _ma_send_command(
-            'player_queues/play_media',
-            queue_id=ma_player_id,
-            media=[media_uri],
-        )
+        from system_utils.sources import music_assistant as ma_mod
+        if not await ma_mod._ensure_connected():
+            return jsonify({"error": "Music Assistant not reachable"}), 502
+        client = ma_mod._client
+        if client is None:
+            return jsonify({"error": "Music Assistant client unavailable"}), 502
+        # Prefer the typed SDK helper if present; fall back to raw command.
+        play_helper = getattr(getattr(client, 'player_queues', None), 'play_media', None)
+        if callable(play_helper):
+            await play_helper(queue_id, [media_uri])
+        else:
+            await client.send_command(
+                'player_queues/play_media',
+                queue_id=queue_id,
+                media=[media_uri],
+            )
     except Exception as exc:
         logger.warning(f"[MusicConnect] MA play_media failed: {exc}")
         return jsonify({"error": str(exc)}), 502
-    return jsonify({"ok": True, "result": _ma_to_jsonable(result)})
+    return jsonify({"ok": True, "queue_id": queue_id})
 
 
 # ============================================================================

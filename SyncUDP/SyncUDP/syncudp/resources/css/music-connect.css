@@ -2,6 +2,12 @@
    Music Connect (MCU) — slide-in similar-artist bubble graph
    ========================================================================== */
 
+:root {
+    /* JS sets this to the persisted width in px when the panel is mounted.
+       Fallback covers the brief moment before that, and the closed state. */
+    --mc-panel-width: 33.333vw;
+}
+
 /* ---------- Bubble icon on the transport lozenge ---------- */
 #btn-music-connect i,
 #btn-music-connect svg {
@@ -41,21 +47,16 @@
 }
 
 /* ---------- Slide-in side panel ---------- */
-/* Width: true 1/3 of viewport. Min/max guards keep things sane on extremes. */
 .music-connect-panel {
     position: fixed;
     top: 0;
     right: 0;
-    width: 33.333vw;
-    min-width: 320px;
-    max-width: 720px;
+    width: var(--mc-panel-width, 33.333vw);
     height: 100vh;
     height: 100dvh;
     z-index: 1990;
     display: flex;
-    flex-direction: column;
-    padding: 18px 16px 18px;
-    gap: 10px;
+    flex-direction: row;
 
     background: rgba(11, 15, 28, 0.78);
     backdrop-filter: blur(18px) saturate(140%);
@@ -63,9 +64,6 @@
     border-left: 1px solid rgba(255, 255, 255, 0.07);
     box-shadow: -16px 0 48px rgba(0, 0, 0, 0.4);
 
-    /* Important: do not toggle `visibility` — it would skip the slide-out
-       transition. transform-only animation is what makes both directions feel
-       symmetrical. */
     transform: translateX(100%);
     transition: transform 0.32s cubic-bezier(0.4, 0, 0.2, 1);
     pointer-events: auto;
@@ -73,6 +71,57 @@
 
 .music-connect-panel.open {
     transform: translateX(0);
+}
+
+/* While the user is actively dragging the divider we suppress the slide
+   transition and the layout transitions on lyrics/player so the panel
+   tracks the pointer in real time without lag. */
+body.music-connect-resizing .music-connect-panel,
+body.music-connect-resizing #lyrics,
+body.music-connect-resizing #player-ui-container {
+    transition: none !important;
+}
+
+/* ---------- Resize handle (left edge of the panel) ---------- */
+.music-connect-resize-handle {
+    flex: 0 0 auto;
+    width: 14px;
+    cursor: col-resize;
+    background: transparent;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    touch-action: none;
+    user-select: none;
+    -webkit-user-select: none;
+    -webkit-tap-highlight-color: transparent;
+}
+
+.music-connect-resize-handle:focus-visible {
+    outline: 2px solid rgba(125, 141, 255, 0.55);
+    outline-offset: -2px;
+}
+
+.mc-resize-grip {
+    width: 4px;
+    height: 56px;
+    border-radius: 4px;
+    background: rgba(255, 255, 255, 0.18);
+    transition: background 0.15s ease;
+}
+
+.music-connect-resize-handle:hover .mc-resize-grip,
+body.music-connect-resizing .mc-resize-grip {
+    background: rgba(125, 141, 255, 0.7);
+}
+
+.music-connect-inner {
+    flex: 1;
+    min-width: 0;
+    display: flex;
+    flex-direction: column;
+    gap: 10px;
+    padding: 18px 16px 18px 4px;
 }
 
 .music-connect-header {
@@ -116,13 +165,15 @@
     color: rgba(255, 255, 255, 0.75);
     border: none;
     border-radius: 999px;
-    width: 30px;
-    height: 30px;
+    width: 36px;
+    height: 36px;
     cursor: pointer;
-    font-size: 1.1rem;
+    font-size: 1.2rem;
     line-height: 1;
     flex-shrink: 0;
     transition: background 0.15s ease, color 0.15s ease;
+    touch-action: manipulation;
+    -webkit-tap-highlight-color: transparent;
 }
 
 .music-connect-close:hover {
@@ -144,10 +195,11 @@
     background: rgba(12, 16, 32, 0.7);
     border: 1px solid rgba(150, 165, 220, 0.18);
     color: #eef1fb;
-    padding: 7px 10px;
+    padding: 9px 12px;
     border-radius: 8px;
-    font-size: 0.85rem;
+    font-size: 0.9rem;
     outline: none;
+    -webkit-appearance: none;
 }
 
 .music-connect-search-input:focus {
@@ -158,12 +210,14 @@
     background: linear-gradient(135deg, #7d8dff, #b56dff);
     color: white;
     border: 0;
-    padding: 7px 14px;
+    padding: 9px 16px;
     border-radius: 8px;
     font-weight: 600;
-    font-size: 0.85rem;
+    font-size: 0.9rem;
     cursor: pointer;
     transition: transform 120ms ease, box-shadow 120ms ease;
+    touch-action: manipulation;
+    -webkit-tap-highlight-color: transparent;
 }
 
 .music-connect-explore-btn:hover {
@@ -179,16 +233,18 @@
     color: rgba(170, 180, 220, 0.85);
     cursor: pointer;
     user-select: none;
-    padding: 4px 10px;
+    padding: 6px 10px;
     border: 1px solid rgba(150, 165, 220, 0.18);
     border-radius: 999px;
     background: rgba(255, 255, 255, 0.03);
+    touch-action: manipulation;
+    -webkit-tap-highlight-color: transparent;
 }
 
 .music-connect-toggle input {
     accent-color: #7d8dff;
-    width: 13px;
-    height: 13px;
+    width: 14px;
+    height: 14px;
     cursor: pointer;
 }
 
@@ -264,9 +320,9 @@
     display: grid;
     grid-template-columns: 1fr 1fr;
     gap: 10px;
-    height: 36%;
-    min-height: 200px;
-    max-height: 42vh;
+    height: 38%;
+    min-height: 220px;
+    max-height: 46vh;
 }
 
 .mc-media-column {
@@ -290,16 +346,20 @@
     border-bottom: 1px solid rgba(150, 165, 220, 0.18);
 }
 
+/* Touch-friendly scroll: momentum, contained overscroll, vertical pan only.
+   The bubble graph above uses touch-action: none to capture drags, so
+   each list explicitly opts back into vertical panning here. */
 .mc-media-list {
     flex: 1;
     overflow-y: auto;
+    overflow-x: hidden;
     -webkit-overflow-scrolling: touch;
     overscroll-behavior: contain;
     touch-action: pan-y;
     padding: 8px;
     display: flex;
     flex-direction: column;
-    gap: 6px;
+    gap: 8px;
     scrollbar-width: thin;
     scrollbar-color: rgba(150, 165, 220, 0.3) transparent;
 }
@@ -310,13 +370,17 @@
 
 .mc-card {
     display: flex;
-    gap: 10px;
+    gap: 12px;
     align-items: center;
     background: rgba(255, 255, 255, 0.03);
     border: 1px solid rgba(150, 165, 220, 0.18);
-    padding: 8px 10px;
+    padding: 10px 12px;
     border-radius: 10px;
     transition: background 150ms ease, border-color 150ms ease, transform 150ms ease;
+    -webkit-user-select: none;
+    user-select: none;
+    -webkit-tap-highlight-color: transparent;
+    touch-action: pan-y;
 }
 
 .mc-card:hover {
@@ -331,7 +395,7 @@
 }
 
 .mc-card-title {
-    font-size: 0.85rem;
+    font-size: 0.92rem;
     font-weight: 600;
     white-space: nowrap;
     overflow: hidden;
@@ -340,46 +404,53 @@
 }
 
 .mc-card-sub {
-    font-size: 0.72rem;
+    font-size: 0.78rem;
     color: rgba(170, 180, 220, 0.85);
-    margin-top: 2px;
+    margin-top: 3px;
     white-space: nowrap;
     overflow: hidden;
     text-overflow: ellipsis;
 }
 
+/* 44x44 minimum tap target (Apple HIG) and explicit touch-action so iOS
+   doesn't introduce a 300ms tap delay. */
 .mc-play-btn {
     border: 0;
     background: linear-gradient(135deg, #7d8dff, #b56dff);
     color: white;
     border-radius: 999px;
-    width: 32px;
-    height: 32px;
+    width: 44px;
+    height: 44px;
     cursor: pointer;
     flex-shrink: 0;
-    font-size: 0.8rem;
+    font-size: 0.95rem;
     display: inline-flex;
     align-items: center;
     justify-content: center;
     box-shadow: 0 4px 10px rgba(125, 141, 255, 0.35);
     transition: transform 120ms ease, box-shadow 120ms ease;
+    touch-action: manipulation;
+    -webkit-tap-highlight-color: transparent;
 }
 
-.mc-play-btn:hover {
+.mc-play-btn:hover,
+.mc-play-btn:active {
     transform: scale(1.08);
     box-shadow: 0 6px 14px rgba(125, 141, 255, 0.55);
 }
 
 .mc-empty {
     color: rgba(170, 180, 220, 0.7);
-    font-size: 0.8rem;
+    font-size: 0.85rem;
     text-align: center;
-    padding: 14px 8px;
+    padding: 16px 8px;
 }
 
 /* ---------- Lyrics shifts left when MCU is open ---------- */
+/* Width-of-lyrics tracks the user-resizable panel width via the same CSS
+   variable so the divider drag updates both columns simultaneously. */
 body.music-connect-open #lyrics {
-    width: 66.666%;
+    width: calc(100vw - var(--mc-panel-width, 33.333vw));
     max-width: none;
     margin: 0 auto 0 0;
     padding-left: clamp(1rem, 4vw, 3rem);
@@ -389,15 +460,8 @@ body.music-connect-open #lyrics {
 }
 
 body.music-connect-open #player-ui-container {
-    right: 33.333vw;
+    right: var(--mc-panel-width, 33.333vw);
     transition: right 0.32s cubic-bezier(0.4, 0, 0.2, 1);
-}
-
-/* Cap the player-ui shift to match the panel max-width */
-@media (min-width: 2160px) {
-    body.music-connect-open #player-ui-container {
-        right: 720px;
-    }
 }
 
 #lyrics,
@@ -412,7 +476,6 @@ body.music-connect-open #player-ui-container {
 @media (max-width: 760px) {
     .music-connect-panel {
         width: min(85vw, 420px);
-        min-width: 0;
     }
 
     body.music-connect-open #lyrics {
@@ -427,5 +490,15 @@ body.music-connect-open #player-ui-container {
     .music-connect-media {
         grid-template-columns: 1fr;
         max-height: 50vh;
+    }
+
+    /* Hide the resize handle on small screens — the mobile sheet uses a
+       fixed width and there's no room to drag. */
+    .music-connect-resize-handle {
+        display: none;
+    }
+
+    .music-connect-inner {
+        padding: 18px 16px;
     }
 }

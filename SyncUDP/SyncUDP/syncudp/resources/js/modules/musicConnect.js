@@ -839,33 +839,38 @@ const ensurePanel = () => {
     panel.className = 'music-connect-panel';
     panel.setAttribute('aria-hidden', 'true');
     panel.innerHTML = `
-        <div class="music-connect-header">
-            <div class="music-connect-title-wrap">
-                <span class="music-connect-eyebrow">Music Connect</span>
-                <h3 class="music-connect-title" id="music-connect-title">No artist playing</h3>
+        <div class="music-connect-resize-handle" id="music-connect-resize" role="separator" aria-orientation="vertical" aria-label="Resize Music Connect panel" tabindex="0">
+            <span class="mc-resize-grip" aria-hidden="true"></span>
+        </div>
+        <div class="music-connect-inner">
+            <div class="music-connect-header">
+                <div class="music-connect-title-wrap">
+                    <span class="music-connect-eyebrow">Music Connect</span>
+                    <h3 class="music-connect-title" id="music-connect-title">No artist playing</h3>
+                </div>
+                <button type="button" class="music-connect-close" id="music-connect-close" title="Hide Music Connect">×</button>
             </div>
-            <button type="button" class="music-connect-close" id="music-connect-close" title="Hide Music Connect">×</button>
-        </div>
-        <div class="music-connect-toolbar">
-            <input type="text" id="music-connect-search" class="music-connect-search-input" placeholder="Find artist" autocomplete="off">
-            <button type="button" class="music-connect-explore-btn" id="music-connect-explore">Explore</button>
-            <label class="music-connect-toggle">
-                <input type="checkbox" id="music-connect-show-lines">
-                <span>Show connections</span>
-            </label>
-        </div>
-        <div class="music-connect-graph">
-            <svg id="music-connect-svg" preserveAspectRatio="xMidYMid meet"></svg>
-        </div>
-        <div class="music-connect-status" id="music-connect-status"></div>
-        <div class="music-connect-media">
-            <div class="mc-media-column">
-                <h4>Albums</h4>
-                <div class="mc-media-list" id="music-connect-albums"></div>
+            <div class="music-connect-toolbar">
+                <input type="text" id="music-connect-search" class="music-connect-search-input" placeholder="Find artist" autocomplete="off">
+                <button type="button" class="music-connect-explore-btn" id="music-connect-explore">Explore</button>
+                <label class="music-connect-toggle">
+                    <input type="checkbox" id="music-connect-show-lines">
+                    <span>Show connections</span>
+                </label>
             </div>
-            <div class="mc-media-column">
-                <h4>Tracks</h4>
-                <div class="mc-media-list" id="music-connect-tracks"></div>
+            <div class="music-connect-graph">
+                <svg id="music-connect-svg" preserveAspectRatio="xMidYMid meet"></svg>
+            </div>
+            <div class="music-connect-status" id="music-connect-status"></div>
+            <div class="music-connect-media">
+                <div class="mc-media-column">
+                    <h4>Albums</h4>
+                    <div class="mc-media-list" id="music-connect-albums"></div>
+                </div>
+                <div class="mc-media-column">
+                    <h4>Tracks</h4>
+                    <div class="mc-media-list" id="music-connect-tracks"></div>
+                </div>
             </div>
         </div>
     `;
@@ -907,6 +912,95 @@ const ensurePanel = () => {
     } else {
         window.addEventListener('resize', () => { if (isOpen) recomputeLayoutForResize(); });
     }
+
+    setupResizeHandle();
+    applyPersistedWidth();
+};
+
+// ---------------- Drag-to-resize divider ----------------
+
+const PANEL_WIDTH_STORAGE_KEY = 'music-connect:panel-width';
+const MIN_PANEL_WIDTH_PX = 280;
+const MAX_PANEL_WIDTH_FRAC = 0.7; // never exceed 70% of viewport
+
+const clampPanelWidth = (px) => {
+    const max = Math.round(window.innerWidth * MAX_PANEL_WIDTH_FRAC);
+    return Math.max(MIN_PANEL_WIDTH_PX, Math.min(max, Math.round(px)));
+};
+
+const setPanelWidth = (px) => {
+    const w = clampPanelWidth(px);
+    document.documentElement.style.setProperty('--mc-panel-width', `${w}px`);
+};
+
+const persistPanelWidth = (px) => {
+    try { localStorage.setItem(PANEL_WIDTH_STORAGE_KEY, String(Math.round(px))); } catch (e) { /* ignore */ }
+};
+
+const applyPersistedWidth = () => {
+    let stored = null;
+    try { stored = localStorage.getItem(PANEL_WIDTH_STORAGE_KEY); } catch (e) { /* ignore */ }
+    if (stored && !Number.isNaN(Number(stored))) {
+        setPanelWidth(Number(stored));
+    } else {
+        // Default to 1/3 of the viewport on first run.
+        setPanelWidth(Math.round(window.innerWidth / 3));
+    }
+};
+
+const setupResizeHandle = () => {
+    const handle = panel?.querySelector('#music-connect-resize');
+    if (!handle) return;
+
+    let dragging = false;
+    let activePointerId = null;
+
+    const onMove = (e) => {
+        if (!dragging || e.pointerId !== activePointerId) return;
+        // Panel is anchored to the right edge; width = viewport - clientX.
+        const next = window.innerWidth - e.clientX;
+        setPanelWidth(next);
+        recomputeLayoutForResize();
+    };
+
+    const onEnd = (e) => {
+        if (!dragging || e.pointerId !== activePointerId) return;
+        dragging = false;
+        try { handle.releasePointerCapture(activePointerId); } catch (err) { /* ignore */ }
+        activePointerId = null;
+        document.body.classList.remove('music-connect-resizing');
+        const computed = getComputedStyle(document.documentElement).getPropertyValue('--mc-panel-width').trim();
+        const px = parseFloat(computed) || (window.innerWidth / 3);
+        persistPanelWidth(px);
+    };
+
+    handle.addEventListener('pointerdown', (e) => {
+        e.preventDefault();
+        dragging = true;
+        activePointerId = e.pointerId;
+        try { handle.setPointerCapture(activePointerId); } catch (err) { /* ignore */ }
+        document.body.classList.add('music-connect-resizing');
+    });
+    handle.addEventListener('pointermove', onMove);
+    handle.addEventListener('pointerup', onEnd);
+    handle.addEventListener('pointercancel', onEnd);
+
+    // Keyboard support: ←/→ resize by 24px increments.
+    handle.addEventListener('keydown', (e) => {
+        const computed = getComputedStyle(document.documentElement).getPropertyValue('--mc-panel-width').trim();
+        const cur = parseFloat(computed) || (window.innerWidth / 3);
+        if (e.key === 'ArrowLeft') {
+            e.preventDefault();
+            setPanelWidth(cur + 24);
+            persistPanelWidth(cur + 24);
+            recomputeLayoutForResize();
+        } else if (e.key === 'ArrowRight') {
+            e.preventDefault();
+            setPanelWidth(cur - 24);
+            persistPanelWidth(cur - 24);
+            recomputeLayoutForResize();
+        }
+    });
 };
 
 const setBodyOpenState = (open) => {
