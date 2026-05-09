@@ -1,0 +1,40 @@
+configuration:
+  music_assistant_base_url:
+    name: Music Assistant Server URL
+    description: "Optional Music Assistant server URL used for player naming/metadata enrichment (e.g., http://192.168.1.x:8095)."
+  music_assistant_token:
+    name: Music Assistant API Token
+    description: "Optional API token from Music Assistant."
+  music_assistant_player_id:
+    name: Music Assistant Player ID
+    description: "Optional player ID to associate with the UDP stream."
+  lastfm_api_key:
+    name: Last.fm API Key
+    description: "Optional key used for metadata/artwork enrichment."
+  server_port:
+    name: Web UI Port
+    description: "HTTP port for the SyncLyricsUDP web UI."
+  https_enabled:
+    name: HTTPS Enabled
+    description: "Enable HTTPS for the web UI."
+  https_port:
+    name: HTTPS Port
+    description: "HTTPS port for the SyncLyricsUDP web UI."
+  recognition_enabled:
+    name: Recognition Enabled
+    description: "Enable UDP audio recognition on startup."
+  udp_listen_port:
+    name: UDP Listen Port
+    description: "UDP port that receives PCM/RTP audio."
+  udp_audio_sample_rate:
+    name: UDP Sample Rate
+    description: "Sample rate of incoming UDP audio in Hz."
+  udp_jitter_buffer_ms:
+    name: UDP Jitter Buffer
+    description: "Jitter buffer for RTP packet reordering, in milliseconds."
+  players:
+    name: Players
+    description: "Optional named UDP/RTP stream bindings. Leave empty to auto-discover."
+  players_auto_discover:
+    name: Auto-discover Players
+    description: "Automatically create players for newly observed UDP/RTP streams."

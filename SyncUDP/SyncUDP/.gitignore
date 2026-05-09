@@ -1,0 +1,35 @@
+# Generated dependency/build output
+node_modules/
+dist/
+build/
+.next/
+.cache/
+coverage/
+logs/
+__pycache__/
+*.py[cod]
+
+# Runtime/generated data
+cache/
+data/
+certs/
+lyrics_database/
+album_art_database/
+local_fingerprint_database/
+spicetify_database/
+config_backups/
+*.log
+
+# Generated binary assets should not be added in Phase 1
+*.png
+*.jpg
+*.jpeg
+*.webp
+*.gif
+*.ico
+*.icns
+*.woff
+*.woff2
+*.ttf
+*.mp3
+*.wav
