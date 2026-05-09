@@ -446,6 +446,91 @@ body.music-connect-resizing .mc-resize-grip {
     padding: 16px 8px;
 }
 
+/* Mouse drag-to-scroll: when the JS hook detects a real drag it adds the
+   `dragging` class so the cursor flips to grabbing and child cards no
+   longer trigger their own hover feedback. */
+.mc-media-list.dragging {
+    cursor: grabbing;
+}
+
+.mc-media-list.dragging .mc-card {
+    cursor: grabbing;
+    transform: none !important;
+}
+
+/* ---------- Inline album expansion (tracklist drawer) ---------- */
+.mc-album-wrap {
+    display: flex;
+    flex-direction: column;
+    gap: 6px;
+}
+
+.mc-album-card {
+    cursor: pointer;
+}
+
+.mc-disclosure {
+    color: rgba(170, 180, 220, 0.7);
+    font-size: 0.95rem;
+    transition: transform 180ms ease;
+    flex-shrink: 0;
+    padding-left: 4px;
+}
+
+.mc-album-wrap.expanded .mc-disclosure {
+    transform: rotate(180deg);
+    color: #c98bff;
+}
+
+.mc-album-tracks {
+    margin-left: 56px;
+    margin-right: 6px;
+    display: flex;
+    flex-direction: column;
+    gap: 4px;
+    padding-bottom: 4px;
+}
+
+.mc-album-track {
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+    gap: 8px;
+    padding: 6px 10px;
+    border: 1px dashed rgba(150, 165, 220, 0.18);
+    border-radius: 8px;
+    font-size: 0.82rem;
+    color: rgba(220, 225, 245, 0.85);
+}
+
+.mc-album-track-title {
+    white-space: nowrap;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    flex: 1;
+    min-width: 0;
+}
+
+.mc-album-track-play {
+    border: 0;
+    background: transparent;
+    color: #9aa9ff;
+    cursor: pointer;
+    font-size: 0.95rem;
+    padding: 6px 12px;
+    border-radius: 6px;
+    min-width: 44px;
+    min-height: 44px;
+    touch-action: manipulation;
+    -webkit-tap-highlight-color: transparent;
+}
+
+.mc-album-track-play:hover,
+.mc-album-track-play:active {
+    color: white;
+    background: rgba(125, 141, 255, 0.12);
+}
+
 /* ---------- Lyrics shifts left when MCU is open ---------- */
 /* Width-of-lyrics tracks the user-resizable panel width via the same CSS
    variable so the divider drag updates both columns simultaneously. */

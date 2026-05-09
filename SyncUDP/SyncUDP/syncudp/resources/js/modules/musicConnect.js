@@ -589,26 +589,146 @@ const renderEmpty = (el, msg) => {
     el.innerHTML = `<div class="mc-empty">${escapeHtml(msg)}</div>`;
 };
 
+const URI_RE = /^([^:]+):\/\/album\/(.+)$/;
+const parseAlbumUri = (uri) => {
+    if (!uri) return null;
+    const m = URI_RE.exec(uri);
+    if (!m) return null;
+    return { provider: m[1], itemId: m[2] };
+};
+
+let albumExpandedKey = '';
+const albumTrackCache = new Map(); // album key -> array of {title, uri}
+
+const fetchAlbumTracksFor = async (album) => {
+    const candidates = [];
+    const seen = new Set();
+    const push = (itemId, provider) => {
+        if (!itemId || !provider) return;
+        const k = `${provider}::${itemId}`;
+        if (seen.has(k)) return;
+        seen.add(k);
+        candidates.push({ itemId, provider });
+    };
+    const parsed = parseAlbumUri(album.uri);
+    if (parsed) push(parsed.itemId, parsed.provider);
+    if (album.itemId && album.provider) push(album.itemId, album.provider);
+    const mappings = Array.isArray(album.raw?.provider_mappings) ? album.raw.provider_mappings : [];
+    for (const pm of mappings) {
+        push(pm.item_id, pm.provider_instance || pm.provider_domain);
+        if (pm.provider_domain && pm.provider_instance && pm.provider_domain !== pm.provider_instance) {
+            push(pm.item_id, pm.provider_domain);
+        }
+    }
+    let lastErr = null;
+    for (const { itemId, provider } of candidates) {
+        try {
+            const params = new URLSearchParams({ item_id: itemId, provider });
+            const res = await fetch(`/api/music-connect/album-tracks?${params.toString()}`);
+            if (!res.ok) {
+                let msg = `album-tracks failed (${res.status})`;
+                try { const j = await res.json(); if (j && j.error) msg = j.error; } catch (e) { /* ignore */ }
+                lastErr = new Error(msg);
+                continue;
+            }
+            const data = await res.json();
+            const root = data?.result ?? data;
+            const tracks = Array.isArray(root) ? root
+                : Array.isArray(root?.tracks) ? root.tracks
+                : Array.isArray(root?.items) ? root.items
+                : [];
+            if (tracks.length) return tracks;
+        } catch (e) {
+            lastErr = e;
+        }
+    }
+    if (lastErr) throw lastErr;
+    return [];
+};
+
 const renderAlbums = (albums) => {
     if (!albumsListEl) return;
     if (!albums.length) { renderEmpty(albumsListEl, 'No albums'); return; }
     albumsListEl.innerHTML = '';
     for (const a of albums) {
+        const wrap = document.createElement('div');
+        wrap.className = 'mc-album-wrap';
+
         const card = document.createElement('div');
-        card.className = 'mc-card';
+        card.className = 'mc-card mc-album-card';
         card.innerHTML = `
+            <button type="button" class="mc-play-btn" title="Play album" aria-label="Play album">▶</button>
             <div class="mc-card-body">
                 <div class="mc-card-title">${escapeHtml(a.title)}</div>
                 <div class="mc-card-sub">${escapeHtml(a.artistName)}${a.year ? ` · ${escapeHtml(a.year)}` : ''}</div>
             </div>
-            <button type="button" class="mc-play-btn" title="Play album" aria-label="Play album">▶</button>
+            <span class="mc-disclosure" aria-hidden="true">▾</span>
         `;
         const playBtn = card.querySelector('.mc-play-btn');
-        playBtn?.addEventListener('click', (e) => {
+        playBtn.addEventListener('click', (e) => {
             e.stopPropagation();
             playMedia(a.uri);
         });
-        albumsListEl.appendChild(card);
+
+        // Click anywhere else on the card toggles the inline tracklist.
+        card.addEventListener('click', async () => {
+            const willExpand = albumExpandedKey !== a.id;
+            albumExpandedKey = willExpand ? a.id : '';
+            renderAlbums(albums); // re-render to update open state
+            if (!willExpand) return;
+            if (albumTrackCache.has(a.id)) return;
+            try {
+                const raw = await fetchAlbumTracksFor(a);
+                const items = raw.slice().sort((x, y) => {
+                    const ad = (x.disc_number ?? 1) - (y.disc_number ?? 1);
+                    if (ad !== 0) return ad;
+                    const at = (x.track_number ?? 999) - (y.track_number ?? 999);
+                    if (at !== 0) return at;
+                    return String(x.name ?? '').localeCompare(String(y.name ?? ''));
+                }).map((t) => ({
+                    title: t.name || t.title || 'Unknown',
+                    uri: t.uri || '',
+                }));
+                albumTrackCache.set(a.id, items);
+            } catch (err) {
+                console.warn('[MusicConnect] album-tracks failed', a.id, err);
+                albumTrackCache.set(a.id, []);
+                setStatus('Could not load album tracks', true);
+            }
+            // Re-render only if this album is still expanded.
+            if (albumExpandedKey === a.id) renderAlbums(albums);
+        });
+
+        wrap.appendChild(card);
+
+        if (albumExpandedKey === a.id) {
+            wrap.classList.add('expanded');
+            const list = document.createElement('div');
+            list.className = 'mc-album-tracks';
+            const cached = albumTrackCache.get(a.id);
+            if (!cached) {
+                list.innerHTML = `<div class="mc-empty">Loading tracks…</div>`;
+            } else if (!cached.length) {
+                list.innerHTML = `<div class="mc-empty">No track listing available</div>`;
+            } else {
+                for (const t of cached) {
+                    const row = document.createElement('div');
+                    row.className = 'mc-album-track';
+                    row.innerHTML = `
+                        <span class="mc-album-track-title">${escapeHtml(t.title)}</span>
+                        <button type="button" class="mc-album-track-play" title="Play track" aria-label="Play track">▶</button>
+                    `;
+                    row.querySelector('.mc-album-track-play')?.addEventListener('click', (e) => {
+                        e.stopPropagation();
+                        playMedia(t.uri);
+                    });
+                    list.appendChild(row);
+                }
+            }
+            wrap.appendChild(list);
+        }
+
+        albumsListEl.appendChild(wrap);
     }
 };
 
@@ -686,11 +806,18 @@ const loadMediaForArtist = async (artist, requestSeq) => {
         const allAlbums = (Array.isArray(albumsRaw) ? albumsRaw : []).filter((a) => artistListIncludes(extractArtists(a), artist));
         const albumItems = allAlbums.map((a) => ({
             id: a.item_id || a.uri || a.name,
+            itemId: a.item_id || '',
             uri: a.uri || '',
+            provider: a.provider_mappings?.[0]?.provider_instance || a.provider || '',
             title: a.name || 'Unknown',
             artistName: extractArtists(a)[0] || artist,
             year: a.year,
+            raw: a,
         }));
+        // Reset album-tracks cache when a new artist is loaded so old data
+        // doesn't flash up before the fresh fetch resolves.
+        albumTrackCache.clear();
+        albumExpandedKey = '';
         renderAlbums(albumItems.slice(0, 30));
 
         const allTracks = (Array.isArray(tracksRaw) ? tracksRaw : []).filter((t) => artistListIncludes(extractArtists(t), artist));
@@ -915,6 +1042,64 @@ const ensurePanel = () => {
 
     setupResizeHandle();
     applyPersistedWidth();
+    enableDragToScroll(albumsListEl);
+    enableDragToScroll(tracksListEl);
+};
+
+// ---------------- Mouse drag-to-scroll on the media lists ----------------
+// Touch / pen are left to the browser (native momentum scrolling kicks in
+// via `touch-action: pan-y` and `-webkit-overflow-scrolling: touch`).
+// Mouse pointers don't get that for free, so this hook turns left-button
+// drag inside an overflow-y list into a scroll, the same way the original
+// React MediaPanel did.
+
+const DRAG_SCROLL_THRESHOLD = 6;
+
+const enableDragToScroll = (listEl) => {
+    if (!listEl) return;
+    const state = { pointerId: null, startY: 0, startScroll: 0, moved: false };
+
+    listEl.addEventListener('pointerdown', (e) => {
+        if (e.pointerType !== 'mouse') return;
+        if (e.button !== 0) return;
+        const target = e.target;
+        if (target && target.closest && target.closest('button, a, input, select, textarea')) return;
+        state.pointerId = e.pointerId;
+        state.startY = e.clientY;
+        state.startScroll = listEl.scrollTop;
+        state.moved = false;
+    });
+
+    listEl.addEventListener('pointermove', (e) => {
+        if (state.pointerId !== e.pointerId) return;
+        const dy = e.clientY - state.startY;
+        if (!state.moved && Math.abs(dy) < DRAG_SCROLL_THRESHOLD) return;
+        if (!state.moved) {
+            state.moved = true;
+            listEl.classList.add('dragging');
+            try { listEl.setPointerCapture(e.pointerId); } catch (err) { /* ignore */ }
+        }
+        listEl.scrollTop = state.startScroll - dy;
+    });
+
+    const endDrag = (e) => {
+        if (state.pointerId !== e.pointerId) return;
+        if (state.moved) {
+            try { listEl.releasePointerCapture(e.pointerId); } catch (err) { /* ignore */ }
+            listEl.classList.remove('dragging');
+        }
+        state.pointerId = null;
+    };
+    listEl.addEventListener('pointerup', endDrag);
+    listEl.addEventListener('pointercancel', endDrag);
+
+    // Swallow the click that would otherwise fire on a card after a drag.
+    listEl.addEventListener('click', (e) => {
+        if (state.moved) {
+            e.preventDefault();
+            e.stopPropagation();
+        }
+    }, true);
 };
 
 // ---------------- Drag-to-resize divider ----------------
