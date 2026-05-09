@@ -2293,6 +2293,104 @@ async def lastfm_similar_artists():
     return jsonify(payload)
 
 
+def _ma_to_jsonable(value):
+    """Best-effort conversion of MA client SDK objects into JSON-able dicts."""
+    if value is None or isinstance(value, (bool, int, float, str)):
+        return value
+    if isinstance(value, (list, tuple, set)):
+        return [_ma_to_jsonable(v) for v in value]
+    if isinstance(value, dict):
+        return {str(k): _ma_to_jsonable(v) for k, v in value.items()}
+    if hasattr(value, 'to_dict') and callable(value.to_dict):
+        try:
+            return _ma_to_jsonable(value.to_dict())
+        except Exception:
+            pass
+    if hasattr(value, '__dict__'):
+        try:
+            return _ma_to_jsonable({k: v for k, v in vars(value).items() if not k.startswith('_')})
+        except Exception:
+            pass
+    return str(value)
+
+
+async def _ma_send_command(command: str, **kwargs):
+    """Send a raw command via the shared MusicAssistantClient."""
+    from system_utils.sources import music_assistant as ma_mod
+    if not await ma_mod._ensure_connected():
+        raise RuntimeError("Music Assistant not reachable")
+    client = ma_mod._client
+    if client is None:
+        raise RuntimeError("Music Assistant client unavailable")
+    return await client.send_command(command, **kwargs)
+
+
+@app.route("/api/music-connect/search", methods=['GET'])
+async def music_connect_search():
+    """Proxy MA `music/search` for the Music Connect bubble graph media panel."""
+    query = (request.args.get('query') or '').strip()
+    if not query:
+        return jsonify({"error": "missing query"}), 400
+    media_types_raw = request.args.get('media_types') or 'artist,album,track'
+    media_types = [t.strip() for t in media_types_raw.split(',') if t.strip()]
+    try:
+        limit = max(1, min(int(request.args.get('limit') or '60'), 200))
+    except ValueError:
+        limit = 60
+    try:
+        result = await _ma_send_command(
+            'music/search',
+            search_query=query,
+            media_types=media_types,
+            limit=limit,
+        )
+    except Exception as exc:
+        logger.warning(f"[MusicConnect] MA search failed: {exc}")
+        return jsonify({"error": str(exc)}), 502
+    return jsonify(_ma_to_jsonable(result))
+
+
+@app.route("/api/music-connect/album-tracks", methods=['GET'])
+async def music_connect_album_tracks():
+    item_id = (request.args.get('item_id') or '').strip()
+    provider = (request.args.get('provider') or '').strip()
+    if not item_id or not provider:
+        return jsonify({"error": "item_id and provider are required"}), 400
+    try:
+        result = await _ma_send_command(
+            'music/albums/album_tracks',
+            item_id=item_id,
+            provider_instance_id_or_domain=provider,
+            in_library_only=False,
+        )
+    except Exception as exc:
+        logger.warning(f"[MusicConnect] MA album_tracks failed: {exc}")
+        return jsonify({"error": str(exc)}), 502
+    return jsonify(_ma_to_jsonable(result))
+
+
+@app.route("/api/music-connect/play-media", methods=['POST'])
+async def music_connect_play_media():
+    data = await request.get_json(silent=True) or {}
+    media_uri = (data.get('uri') or '').strip()
+    if not media_uri:
+        return jsonify({"error": "uri required"}), 400
+    try:
+        ma_player_id = await _resolve_ma_player_id_for_request()
+    except RuntimeError as exc:
+        return jsonify({"error": str(exc)}), 400
+    try:
+        result = await _ma_send_command(
+            'player_queues/play_media',
+            queue_id=ma_player_id,
+            media=[media_uri],
+        )
+    except Exception as exc:
+        logger.warning(f"[MusicConnect] MA play_media failed: {exc}")
+        return jsonify({"error": str(exc)}), 502
+    return jsonify({"ok": True, "result": _ma_to_jsonable(result)})
+
+
 # ============================================================================
 # Playback Controls API (Device Picker, Volume, Shuffle, Repeat)
 # ============================================================================
