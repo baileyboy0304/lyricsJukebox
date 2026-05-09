@@ -1545,7 +1545,7 @@ async def _update_song():
         new_song_data = await get_current_song_meta_data()
 
         # If no song or empty song or no artist or no title, clear lyrics
-        if new_song_data is None or (not new_song_data["artist"].strip() or not new_song_data["title"].strip()):
+        if new_song_data is None or (not (new_song_data.get("artist") or "").strip() or not (new_song_data.get("title") or "").strip()):
             # Throttled log: only log once every 60 seconds to prevent spam
             if new_song_data is not None:
                 import time
