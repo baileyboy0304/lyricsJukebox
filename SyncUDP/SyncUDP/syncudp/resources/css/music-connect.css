@@ -1,0 +1,236 @@
+/* ==========================================================================
+   Music Connect (MCU) — slide-in similar-artist bubble graph
+   ========================================================================== */
+
+/* ---------- Bubble icon on the transport lozenge ---------- */
+/* Mirrors the sizing/feel of #btn-queue / #btn-like so the new control
+   blends with the existing transport pill. */
+#btn-music-connect i,
+#btn-music-connect svg {
+    font-size: 1.1rem;
+}
+
+#btn-music-connect svg {
+    display: block;
+    width: 22px;
+    height: 22px;
+    overflow: visible;
+}
+
+#btn-music-connect .mc-icon-center {
+    fill: rgba(255, 255, 255, 0.85);
+}
+
+#btn-music-connect .mc-icon-bubble {
+    fill: rgba(255, 255, 255, 0.55);
+}
+
+#btn-music-connect:hover .mc-icon-bubble,
+#btn-music-connect.active .mc-icon-bubble {
+    fill: rgba(125, 141, 255, 0.95);
+}
+
+#btn-music-connect:hover .mc-icon-center,
+#btn-music-connect.active .mc-icon-center {
+    fill: rgba(255, 255, 255, 1);
+}
+
+@media (max-width: 600px) {
+    #btn-music-connect svg {
+        width: 18px;
+        height: 18px;
+    }
+}
+
+/* ---------- Slide-in side panel ---------- */
+.music-connect-panel {
+    position: fixed;
+    top: 0;
+    right: 0;
+    width: 33vw;
+    min-width: 280px;
+    max-width: 520px;
+    height: 100vh;
+    height: 100dvh;
+    z-index: 1990;
+    display: flex;
+    flex-direction: column;
+    padding: 18px 16px 24px;
+
+    background: rgba(15, 17, 25, 0.55);
+    backdrop-filter: blur(18px) saturate(140%);
+    -webkit-backdrop-filter: blur(18px) saturate(140%);
+    border-left: 1px solid rgba(255, 255, 255, 0.07);
+    box-shadow: -16px 0 48px rgba(0, 0, 0, 0.4);
+
+    transform: translateX(100%);
+    transition: transform 0.32s cubic-bezier(0.4, 0, 0.2, 1);
+    pointer-events: auto;
+    visibility: hidden;
+}
+
+.music-connect-panel.open {
+    transform: translateX(0);
+    visibility: visible;
+}
+
+.music-connect-header {
+    display: flex;
+    align-items: flex-start;
+    justify-content: space-between;
+    gap: 12px;
+    padding-bottom: 14px;
+    border-bottom: 1px solid rgba(255, 255, 255, 0.08);
+    margin-bottom: 10px;
+}
+
+.music-connect-title-wrap {
+    min-width: 0;
+    flex: 1;
+}
+
+.music-connect-eyebrow {
+    display: block;
+    font-size: 0.7rem;
+    letter-spacing: 0.18em;
+    text-transform: uppercase;
+    color: rgba(170, 180, 220, 0.75);
+    margin-bottom: 4px;
+}
+
+.music-connect-title {
+    margin: 0;
+    font-size: 1.05rem;
+    font-weight: 600;
+    color: white;
+    background: linear-gradient(90deg, #9aa9ff, #c98bff);
+    -webkit-background-clip: text;
+    background-clip: text;
+    color: transparent;
+    white-space: nowrap;
+    overflow: hidden;
+    text-overflow: ellipsis;
+}
+
+.music-connect-close {
+    background: rgba(255, 255, 255, 0.06);
+    color: rgba(255, 255, 255, 0.75);
+    border: none;
+    border-radius: 999px;
+    width: 30px;
+    height: 30px;
+    cursor: pointer;
+    font-size: 1.1rem;
+    line-height: 1;
+    flex-shrink: 0;
+    transition: background 0.15s ease, color 0.15s ease;
+}
+
+.music-connect-close:hover {
+    background: rgba(255, 255, 255, 0.14);
+    color: white;
+}
+
+.music-connect-graph {
+    flex: 1;
+    min-height: 0;
+    position: relative;
+}
+
+.music-connect-graph svg {
+    width: 100%;
+    height: 100%;
+    display: block;
+    -webkit-user-select: none;
+    user-select: none;
+}
+
+.mc-active-bubble {
+    fill: url(#mc-active-grad);
+    filter: drop-shadow(0 0 18px rgba(140, 120, 255, 0.55));
+}
+
+.mc-related-bubble {
+    stroke-width: 1.5;
+    filter: drop-shadow(0 4px 12px rgba(0, 0, 0, 0.35));
+    transition: filter 200ms ease;
+}
+
+.mc-bubble:hover .mc-related-bubble {
+    filter: drop-shadow(0 0 14px rgba(255, 255, 255, 0.35));
+}
+
+.mc-active-label,
+.mc-related-label {
+    fill: white;
+    pointer-events: none;
+    font-weight: 600;
+    letter-spacing: 0.1px;
+    stroke: rgba(0, 0, 0, 0.55);
+    stroke-width: 3px;
+    paint-order: stroke fill;
+}
+
+.mc-active-label {
+    font-weight: 700;
+}
+
+.mc-connector {
+    stroke-linecap: round;
+}
+
+.music-connect-status {
+    font-size: 0.85rem;
+    color: rgba(220, 225, 245, 0.8);
+    text-align: center;
+    margin-top: 10px;
+    min-height: 1.2em;
+    display: none;
+}
+
+.music-connect-status.error {
+    color: #ff8a8a;
+}
+
+/* ---------- Lyrics shifts left when MCU is open ---------- */
+/* The MCU panel reserves the right-most third of the viewport, so the
+   lyrics column is squeezed into the remaining 2/3 to avoid overlap. */
+body.music-connect-open #lyrics {
+    width: 67%;
+    max-width: none;
+    margin: 0 auto 0 0;
+    padding-left: clamp(1rem, 4vw, 3rem);
+    padding-right: clamp(1rem, 3vw, 2rem);
+    transition: width 0.32s cubic-bezier(0.4, 0, 0.2, 1),
+                padding 0.32s cubic-bezier(0.4, 0, 0.2, 1);
+}
+
+body.music-connect-open #player-ui-container {
+    right: 33vw;
+    transition: right 0.32s cubic-bezier(0.4, 0, 0.2, 1);
+}
+
+#lyrics,
+#player-ui-container {
+    transition: width 0.32s cubic-bezier(0.4, 0, 0.2, 1),
+                right 0.32s cubic-bezier(0.4, 0, 0.2, 1),
+                padding 0.32s cubic-bezier(0.4, 0, 0.2, 1);
+}
+
+/* Mobile fallback: panel takes near-full width and we don't squeeze the
+   lyrics — they overlap by design since space is too tight to share. */
+@media (max-width: 760px) {
+    .music-connect-panel {
+        width: min(85vw, 420px);
+        min-width: 0;
+    }
+
+    body.music-connect-open #lyrics {
+        width: 100%;
+        padding-left: clamp(1rem, 3vw, 2rem);
+    }
+
+    body.music-connect-open #player-ui-container {
+        right: 0;
+    }
+}

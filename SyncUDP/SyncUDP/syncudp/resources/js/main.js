@@ -132,6 +132,9 @@ import { initTouchGestures } from './modules/touchGestures.js';
 // Keyboard Shortcuts (Level 3)
 import { initKeyboardShortcuts } from './modules/keyboard.js';
 
+// Music Connect (Level 3) — slide-in similar-artist bubble graph
+import { setupMusicConnect } from './modules/musicConnect.js';
+
 // ========== CONNECT MODULES ==========
 
 // Connect slideshow functions to background module
@@ -887,6 +890,9 @@ async function main() {
     if (queueCloseBtn) {
         queueCloseBtn.addEventListener('click', toggleQueueDrawer);
     }
+
+    // Setup Music Connect (similar-artist bubble graph) toggle button
+    setupMusicConnect();
 
     // Setup next-up card tap-to-dismiss
     const nextUpCard = document.getElementById('next-up-card');

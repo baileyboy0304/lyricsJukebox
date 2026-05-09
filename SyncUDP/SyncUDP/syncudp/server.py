@@ -2217,6 +2217,83 @@ async def toggle_liked_status():
 
 
 # ============================================================================
+# Music Connect (Last.fm similar-artist graph) proxy
+# ============================================================================
+
+# Tiny in-process cache: artist (lower) -> (timestamp, payload)
+_lastfm_similar_cache: Dict[str, tuple] = {}
+_LASTFM_SIMILAR_TTL = 6 * 3600
+
+
+@app.route("/api/lastfm/similar", methods=['GET'])
+async def lastfm_similar_artists():
+    """
+    Proxy for Last.fm artist.getSimilar — used by the Music Connect UX
+    to render the bubble graph for the currently-playing artist. Reuses
+    the LASTFM_API_KEY env var that is already populated from addon
+    options by run.sh, so no extra config is required.
+    """
+    artist = (request.args.get('artist') or '').strip()
+    mbid = (request.args.get('mbid') or '').strip()
+    try:
+        limit = max(1, min(int(request.args.get('limit') or '20'), 50))
+    except ValueError:
+        limit = 20
+    autocorrect = '1' if (request.args.get('autocorrect') or '0').lower() in ('1', 'true', 'yes') else '0'
+
+    if not artist and not mbid:
+        return jsonify({"error": "missing artist or mbid"}), 400
+
+    api_key = os.getenv('LASTFM_API_KEY', '').strip()
+    if not api_key:
+        return jsonify({"error": "Last.fm API key not configured (set lastfm_api_key in addon options)"}), 503
+
+    cache_key = f"{(mbid or artist).lower()}::{limit}::{autocorrect}"
+    now = time.time()
+    cached = _lastfm_similar_cache.get(cache_key)
+    if cached and (now - cached[0]) < _LASTFM_SIMILAR_TTL:
+        return jsonify(cached[1])
+
+    import requests as _requests  # local import to keep module-level imports unchanged
+
+    params = {
+        'method': 'artist.getSimilar',
+        'api_key': api_key,
+        'format': 'json',
+        'limit': str(limit),
+        'autocorrect': autocorrect,
+    }
+    if mbid:
+        params['mbid'] = mbid
+    else:
+        params['artist'] = artist
+
+    loop = asyncio.get_event_loop()
+    try:
+        response = await loop.run_in_executor(
+            None,
+            lambda: _requests.get('https://ws.audioscrobbler.com/2.0/', params=params, timeout=10),
+        )
+    except _requests.exceptions.RequestException as exc:
+        logger.warning(f"[MusicConnect] Last.fm request failed: {exc}")
+        return jsonify({"error": f"Last.fm request failed: {exc}"}), 502
+
+    if response.status_code != 200:
+        return jsonify({"error": f"Last.fm returned {response.status_code}"}), 502
+
+    try:
+        payload = response.json()
+    except ValueError:
+        return jsonify({"error": "Last.fm returned non-JSON"}), 502
+
+    if isinstance(payload, dict) and 'error' in payload:
+        return jsonify({"error": payload.get('message', 'Last.fm error'), "code": payload.get('error')}), 502
+
+    _lastfm_similar_cache[cache_key] = (now, payload)
+    return jsonify(payload)
+
+
+# ============================================================================
 # Playback Controls API (Device Picker, Volume, Shuffle, Repeat)
 # ============================================================================
 
