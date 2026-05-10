@@ -10,9 +10,37 @@
  * pop-in, imploding-on-select).
  */
 
+import { selectedPlayer, effectivePlayer } from './state.js';
+
 const PANEL_ID = 'music-connect-panel';
 const SVG_NS = 'http://www.w3.org/2000/svg';
 const POLL_MS = 5000;
+
+// In multi-instance UDP mode each browser tab/kiosk is scoped to a
+// single player via `?player=<name>` (or via the player picker, which
+// updates `selectedPlayer`). Every backend call that touches "the
+// currently playing track" or "play this on the linked MA player"
+// must carry that scope, otherwise tab A's bubbles end up showing
+// tab B's artist.
+const playerScope = () => {
+    // 1. Live state (set by playerSelector when the user picks a
+    //    player or when /current-track autodetects one).
+    const fromState = selectedPlayer || effectivePlayer;
+    if (fromState) return fromState;
+    // 2. URL param fallback for the very first render before
+    //    playerSelector has populated state.
+    try {
+        const fromUrl = new URLSearchParams(window.location.search).get('player');
+        return (fromUrl || '').trim() || null;
+    } catch (e) { return null; }
+};
+
+const withPlayerScope = (path) => {
+    const player = playerScope();
+    if (!player) return path;
+    const sep = path.includes('?') ? '&' : '?';
+    return `${path}${sep}player=${encodeURIComponent(player)}`;
+};
 
 const FLY_IN_SPEED = 0.16;
 const EXPLOSION_SPEED = 22;
@@ -815,7 +843,9 @@ const renderTracks = (tracks) => {
 const playMedia = async (uri) => {
     if (!uri) return;
     try {
-        const res = await fetch('/api/music-connect/play-media', {
+        // Scope to the active player so a card tapped in tab A doesn't
+        // hijack playback on tab B's player.
+        const res = await fetch(withPlayerScope('/api/music-connect/play-media'), {
             method: 'POST',
             headers: { 'Content-Type': 'application/json' },
             body: JSON.stringify({ uri }),
@@ -983,7 +1013,10 @@ const loadArtist = async (rawArtist, force = false) => {
 
 const fetchCurrentArtist = async () => {
     try {
-        const res = await fetch('/current-track');
+        // Multi-instance UDP setups have one engine per player, each
+        // potentially playing a different artist. Scope the request so
+        // tab B's bubbles don't end up showing tab A's artist.
+        const res = await fetch(withPlayerScope('/current-track'));
         if (!res.ok) return null;
         const data = await res.json();
         return data?.artist || data?.artist_name || null;
