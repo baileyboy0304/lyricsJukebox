@@ -46,7 +46,7 @@ import {
 import { normalizeTrackId, sleep, areLyricsDifferent } from './modules/utils.js';
 
 // API (Level 1)
-import { getConfig, getCurrentTrack, getLyrics, fetchArtistImages, fetchQueue } from './modules/api.js';
+import { getConfig, getCurrentTrack, getLyrics, fetchArtistImages, fetchQueue, withPlayerScope } from './modules/api.js';
 
 // DOM (Level 1)
 import { setLyricsInDom, updateThemeColor } from './modules/dom.js';
@@ -908,7 +908,11 @@ async function main() {
             resyncBtn.classList.add('busy');
             resyncBtn.disabled = true;
             try {
-                const res = await fetch('/api/audio-recognition/resync', {
+                // Scope the resync to *this* tab's player. Without the
+                // scope, the backend would clear the lock on every engine
+                // — which would also disrupt unrelated tabs/displays
+                // sharing the addon.
+                const res = await fetch(withPlayerScope('/api/audio-recognition/resync'), {
                     method: 'POST',
                     headers: { 'Content-Type': 'application/json' },
                     body: '{}',

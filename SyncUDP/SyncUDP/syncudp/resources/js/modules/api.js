@@ -265,8 +265,11 @@ export async function getConfig() {
  * player from the last /current-track response so control commands (play,
  * pause, next, …) always carry a player scope even before the user opens the
  * player picker.
+ *
+ * Exported so any module that talks to a player-scoped endpoint can reuse
+ * the same precedence rules without duplicating the logic.
  */
-function withPlayerScope(path) {
+export function withPlayerScope(path) {
     const player = selectedPlayer || effectivePlayer;
     if (!player) return path;
     const sep = path.includes('?') ? '&' : '?';

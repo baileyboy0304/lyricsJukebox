@@ -10,37 +10,16 @@
  * pop-in, imploding-on-select).
  */
 
-import { selectedPlayer, effectivePlayer } from './state.js';
+import { withPlayerScope } from './api.js';
 
 const PANEL_ID = 'music-connect-panel';
 const SVG_NS = 'http://www.w3.org/2000/svg';
 const POLL_MS = 5000;
 
-// In multi-instance UDP mode each browser tab/kiosk is scoped to a
-// single player via `?player=<name>` (or via the player picker, which
-// updates `selectedPlayer`). Every backend call that touches "the
-// currently playing track" or "play this on the linked MA player"
-// must carry that scope, otherwise tab A's bubbles end up showing
-// tab B's artist.
-const playerScope = () => {
-    // 1. Live state (set by playerSelector when the user picks a
-    //    player or when /current-track autodetects one).
-    const fromState = selectedPlayer || effectivePlayer;
-    if (fromState) return fromState;
-    // 2. URL param fallback for the very first render before
-    //    playerSelector has populated state.
-    try {
-        const fromUrl = new URLSearchParams(window.location.search).get('player');
-        return (fromUrl || '').trim() || null;
-    } catch (e) { return null; }
-};
-
-const withPlayerScope = (path) => {
-    const player = playerScope();
-    if (!player) return path;
-    const sep = path.includes('?') ? '&' : '?';
-    return `${path}${sep}player=${encodeURIComponent(player)}`;
-};
+// All player-scoped fetches go through the shared `withPlayerScope`
+// helper from api.js so the precedence rules (selectedPlayer set by
+// the picker / `?player=` URL param → effectivePlayer auto-detected
+// from the last /current-track response) are identical across the app.
 
 const FLY_IN_SPEED = 0.16;
 const EXPLOSION_SPEED = 22;
