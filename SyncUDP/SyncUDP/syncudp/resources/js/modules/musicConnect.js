@@ -30,6 +30,7 @@ let searchInputEl = null;
 let exploreBtnEl = null;
 let showLinesCheckboxEl = null;
 let transparentBgCheckboxEl = null;
+let readabilityBlurCheckboxEl = null;
 
 let isOpen = false;
 let isLoadingMedia = false;
@@ -43,6 +44,13 @@ let showLines = (() => {
 let transparentBg = (() => {
     try {
         const v = localStorage.getItem('music-connect:transparent-bg');
+        return v === '1';
+    } catch (e) { return false; }
+})();
+
+let readabilityBlur = (() => {
+    try {
+        const v = localStorage.getItem('music-connect:readability-blur');
         return v === '1';
     } catch (e) { return false; }
 })();
@@ -996,6 +1004,10 @@ const ensurePanel = () => {
                     <input type="checkbox" id="music-connect-transparent-bg">
                     <span>Transparent background</span>
                 </label>
+                <label class="music-connect-toggle">
+                    <input type="checkbox" id="music-connect-readability-blur">
+                    <span>Readability blur</span>
+                </label>
             </div>
             <div class="music-connect-graph">
                 <svg id="music-connect-svg" preserveAspectRatio="xMidYMid meet"></svg>
@@ -1026,7 +1038,10 @@ const ensurePanel = () => {
     showLinesCheckboxEl.checked = showLines;
     transparentBgCheckboxEl = panel.querySelector('#music-connect-transparent-bg');
     transparentBgCheckboxEl.checked = transparentBg;
+    readabilityBlurCheckboxEl = panel.querySelector('#music-connect-readability-blur');
+    readabilityBlurCheckboxEl.checked = readabilityBlur;
     applyTransparentBg();
+    applyReadabilityBlur();
 
     panel.querySelector('#music-connect-close')?.addEventListener('click', () => closePanel());
 
@@ -1039,6 +1054,12 @@ const ensurePanel = () => {
         transparentBg = !!e.target.checked;
         try { localStorage.setItem('music-connect:transparent-bg', transparentBg ? '1' : '0'); } catch (err) { /* ignore */ }
         applyTransparentBg();
+    });
+
+    readabilityBlurCheckboxEl.addEventListener('change', (e) => {
+        readabilityBlur = !!e.target.checked;
+        try { localStorage.setItem('music-connect:readability-blur', readabilityBlur ? '1' : '0'); } catch (err) { /* ignore */ }
+        applyReadabilityBlur();
     });
 
     const submitSearch = () => {
@@ -1216,6 +1237,11 @@ const setBodyOpenState = (open) => {
 const applyTransparentBg = () => {
     if (panel) panel.classList.toggle('transparent', !!transparentBg);
     document.body.classList.toggle('music-connect-transparent', !!transparentBg);
+};
+
+const applyReadabilityBlur = () => {
+    if (panel) panel.classList.toggle('readable', !!readabilityBlur);
+    document.body.classList.toggle('music-connect-readable', !!readabilityBlur);
 };
 
 const openPanel = async () => {
