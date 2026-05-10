@@ -746,7 +746,22 @@ body.music-connect-open #player-ui-container {
 }
 
 .mc-blur-disc-active {
-    background: rgba(15, 17, 25, 0.28);
+    background: rgba(15, 17, 25, 0.38);
+    backdrop-filter: blur(16px) saturate(140%);
+    -webkit-backdrop-filter: blur(16px) saturate(140%);
+    /* Wider plateau before the falloff so the bigger active halo fades
+       smoothly into the artwork instead of revealing a hard rim. */
+    -webkit-mask-image: radial-gradient(circle, #000 48%, transparent 100%);
+    mask-image: radial-gradient(circle, #000 48%, transparent 100%);
+}
+
+/* In transparent + readable mode the connector lines need to read against
+   any artwork, including bright washes. A small drop-shadow gives each
+   line a dark halo so the colored stroke stays visible without losing the
+   per-bubble HSL hue cue. */
+.music-connect-panel.transparent.readable .mc-connector {
+    stroke-width: 1.6;
+    filter: drop-shadow(0 0 2px rgba(0, 0, 0, 0.9));
 }
 
 /* SVG layer renders on top of the blur discs. */

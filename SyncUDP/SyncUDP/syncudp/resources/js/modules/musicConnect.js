@@ -319,9 +319,13 @@ const renderBlurDiscs = () => {
     const addDisc = (x, y, r, opacity, isActive) => {
         if (!isFinite(x) || !isFinite(y) || !(r > 0)) return;
         if ((opacity ?? 0) <= 0.02) return;
-        // Slightly larger than the bubble so the frost extends a touch
-        // past the rim and gives the label outline room to breathe.
-        const halo = r * 1.18;
+        // Active centre needs a noticeably larger frost than satellites — its
+        // gradient + glow already cover its own circle, but the label and the
+        // line endpoints clustered around it benefit from extra breathing
+        // room over busy artwork. Satellites get a tighter halo so the
+        // surrounding artwork still shows through between them.
+        const haloMult = isActive ? 1.55 : 1.18;
+        const halo = r * haloMult;
         const d = document.createElement('div');
         d.className = isActive ? 'mc-blur-disc mc-blur-disc-active' : 'mc-blur-disc';
         d.style.width = `${halo * 2}px`;
