@@ -319,12 +319,12 @@ const renderBlurDiscs = () => {
     const addDisc = (x, y, r, opacity, isActive) => {
         if (!isFinite(x) || !isFinite(y) || !(r > 0)) return;
         if ((opacity ?? 0) <= 0.02) return;
-        // Active centre needs a noticeably larger frost than satellites — its
-        // gradient + glow already cover its own circle, but the label and the
-        // line endpoints clustered around it benefit from extra breathing
-        // room over busy artwork. Satellites get a tighter halo so the
-        // surrounding artwork still shows through between them.
-        const haloMult = isActive ? 1.55 : 1.18;
+        // Active centre needs slightly more breathing room than satellites
+        // (the line endpoints all converge here and the larger label needs
+        // the frost to extend a touch past the rim) — but only slightly.
+        // 1.55 was too aggressive; the surrounding artwork should still
+        // dominate the panel.
+        const haloMult = isActive ? 1.25 : 1.18;
         const halo = r * haloMult;
         const d = document.createElement('div');
         d.className = isActive ? 'mc-blur-disc mc-blur-disc-active' : 'mc-blur-disc';
@@ -965,10 +965,15 @@ const loadArtist = async (rawArtist, force = false) => {
             return;
         }
         nodes = buildNodes(list.slice(0, 20));
-        // Explicitly (re-)enter the fly-in phase. The pop-in animation may
-        // already have completed and dropped us into idle / settle while the
-        // Last.fm fetch was in flight; without this the bubbles would sit at
-        // opacity 0 forever.
+        // The pop-in animation only advances `activeOpacity`/`activeScale`
+        // while `phase === 'pop-in'`. If the Last.fm fetch resolves from
+        // cache (or any time before pop-in completes) we'd jump straight
+        // into fly-in with the centre bubble still faded or invisible —
+        // and fly-in / collision-pulse / idle never touch active opacity
+        // again, so it'd stay that way forever. Snap them to their settled
+        // values whenever we override the phase.
+        activeOpacity = 1;
+        activeScale = 1;
         phase = 'fly-in-new-neighbours';
     } catch (err) {
         console.warn('[MusicConnect] failed to load similar artists', err);

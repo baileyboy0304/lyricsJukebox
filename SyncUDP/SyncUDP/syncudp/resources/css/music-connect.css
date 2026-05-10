@@ -746,13 +746,11 @@ body.music-connect-open #player-ui-container {
 }
 
 .mc-blur-disc-active {
-    background: rgba(15, 17, 25, 0.38);
-    backdrop-filter: blur(16px) saturate(140%);
-    -webkit-backdrop-filter: blur(16px) saturate(140%);
-    /* Wider plateau before the falloff so the bigger active halo fades
-       smoothly into the artwork instead of revealing a hard rim. */
-    -webkit-mask-image: radial-gradient(circle, #000 48%, transparent 100%);
-    mask-image: radial-gradient(circle, #000 48%, transparent 100%);
+    /* Slightly stronger than satellites so the centre label reads, but the
+       halo is now small enough that it shouldn't dominate the panel. */
+    background: rgba(15, 17, 25, 0.30);
+    backdrop-filter: blur(14px) saturate(140%);
+    -webkit-backdrop-filter: blur(14px) saturate(140%);
 }
 
 /* In transparent + readable mode the connector lines need to read against
