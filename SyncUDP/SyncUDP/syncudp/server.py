@@ -2676,6 +2676,49 @@ async def audio_recognition_stop():
     })
 
 
+@app.route('/api/audio-recognition/resync', methods=['POST'])
+async def audio_recognition_resync():
+    """
+    Drop the position lock on the active recognition engine(s) and
+    re-run the 3-check verification process. Triggered from the front-end
+    "Re-sync lyrics" button when the user spots the lyric tracker
+    drifting.
+    """
+    body = await request.get_json(silent=True) or {}
+    requested_player = (body.get('player') or request.args.get('player') or '').strip()
+
+    mgr = _get_player_manager_if_running()
+    if mgr is None:
+        return jsonify({"status": "no_engines", "message": "No recognition engines running."}), 503
+
+    engines = mgr.list_engines()
+    if not engines:
+        return jsonify({"status": "no_engines", "message": "No recognition engines running."}), 503
+
+    targets = []
+    if requested_player:
+        eng = engines.get(requested_player)
+        if eng is None:
+            return jsonify({"status": "unknown_player", "player": requested_player}), 404
+        targets.append((requested_player, eng))
+    else:
+        targets.extend(engines.items())
+
+    cleared = []
+    for name, engine in targets:
+        try:
+            engine.force_resync_position()
+            cleared.append(name)
+        except Exception as exc:
+            logger.warning(f"[Resync] failed to clear lock on '{name}': {exc}")
+
+    return jsonify({
+        "status": "ok",
+        "cleared": cleared,
+        "count": len(cleared),
+    })
+
+
 @app.route('/api/audio-recognition/devices', methods=['GET'])
 async def audio_recognition_devices():
     """UDP-only compatibility endpoint: no local capture devices are exposed."""

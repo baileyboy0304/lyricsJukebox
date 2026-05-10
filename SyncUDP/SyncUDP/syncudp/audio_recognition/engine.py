@@ -991,6 +991,27 @@ class RecognitionEngine:
         self._pending_song = None
         self._pending_match_count = 0
         self._pending_fail_count = 0
+
+    def force_resync_position(self) -> bool:
+        """
+        Drop the current position lock and re-run the verification process.
+
+        Triggered from the front-end "Re-sync lyrics" button when the user
+        notices the lyric line tracker is wrong. We keep the recognised
+        track identity so the lyrics don't blank out — we just clear the
+        consensus / lock state so the next ``lock_position_after``
+        recognitions re-establish the timeline from scratch.
+        """
+        self._position_lock_count = 0
+        self._lock_anchors = []
+        self._consecutive_good = 0
+        self._verified_detection = False
+        self._clear_pending()
+        track = self._last_result if self._last_result else "(no current track)"
+        logger.info(
+            f"Position lock cleared by user — re-running 3-check verification for {track}"
+        )
+        return True
     
     def _handle_pending_timeout(self):
         """

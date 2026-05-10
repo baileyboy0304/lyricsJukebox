@@ -894,6 +894,40 @@ async function main() {
     // Setup Music Connect (similar-artist bubble graph) toggle button
     setupMusicConnect();
 
+    // Setup "Re-sync Lyrics" button: drops the recognition engine's
+    // position lock so it re-runs the 3-check verification cycle. The
+    // icon spins while the request is in flight so the user gets
+    // feedback the click was received (recognition still needs ~3
+    // cycles to lock again).
+    const resyncBtn = document.getElementById('btn-resync-lyrics');
+    if (resyncBtn) {
+        let resyncInFlight = false;
+        resyncBtn.addEventListener('click', async () => {
+            if (resyncInFlight) return;
+            resyncInFlight = true;
+            resyncBtn.classList.add('busy');
+            resyncBtn.disabled = true;
+            try {
+                const res = await fetch('/api/audio-recognition/resync', {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: '{}',
+                });
+                if (!res.ok) console.warn('[Resync] request failed', res.status);
+            } catch (err) {
+                console.warn('[Resync] request errored', err);
+            } finally {
+                // Hold the spin a moment so the click feels like it did
+                // something even if the server replies in <100ms.
+                setTimeout(() => {
+                    resyncBtn.classList.remove('busy');
+                    resyncBtn.disabled = false;
+                    resyncInFlight = false;
+                }, 800);
+            }
+        });
+    }
+
     // Setup next-up card tap-to-dismiss
     const nextUpCard = document.getElementById('next-up-card');
     if (nextUpCard) {

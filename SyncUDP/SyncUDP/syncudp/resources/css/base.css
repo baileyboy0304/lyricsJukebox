@@ -971,11 +971,67 @@ body[data-minimal="true"] .word-sync-toggle-btn {
     display: none !important;
 }
 
-/* Slideshow Toggle Button (next to word-sync) */
-.slideshow-toggle-btn {
+/* Re-sync Lyrics Button (between word-sync and slideshow). Circular
+   arrow icon — pressed when the lyric tracker is drifting; clears the
+   position lock so the engine re-runs its 3-check verification. */
+.resync-lyrics-btn {
     position: fixed;
     bottom: 24px;
     left: 128px;
+    z-index: 150;
+    width: 40px;
+    height: 40px;
+    border-radius: 50%;
+    background: rgba(255, 255, 255, 0.1);
+    border: 1px solid rgba(255, 255, 255, 0.1);
+    color: rgba(255, 255, 255, 0.7);
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    cursor: pointer;
+    transition: all 0.3s ease;
+    backdrop-filter: blur(5px);
+    touch-action: manipulation;
+    -webkit-tap-highlight-color: transparent;
+}
+
+.resync-lyrics-btn:hover {
+    background: rgba(255, 255, 255, 0.2);
+    color: white;
+    transform: scale(1.05);
+}
+
+.resync-lyrics-btn i {
+    font-size: 1.2rem;
+}
+
+/* While the resync request is in flight the icon spins to confirm the
+   click was received — recognition needs ~3 cycles to lock again, so a
+   spinner helps the user not mash the button. */
+.resync-lyrics-btn.busy {
+    color: white;
+    background: rgba(59, 130, 246, 0.18);
+    border-color: rgba(59, 130, 246, 0.35);
+}
+
+.resync-lyrics-btn.busy i {
+    animation: resync-spin 0.9s linear infinite;
+}
+
+@keyframes resync-spin {
+    from { transform: rotate(0deg); }
+    to { transform: rotate(360deg); }
+}
+
+body[data-minimal="true"] .resync-lyrics-btn {
+    display: none !important;
+}
+
+/* Slideshow Toggle Button (next to re-sync) */
+.slideshow-toggle-btn {
+    position: fixed;
+    bottom: 24px;
+    left: 180px;
     z-index: 150;
     width: 40px;
     height: 40px;
@@ -1119,6 +1175,7 @@ body[data-minimal="true"] .album-art {
 /* Push bottom-left toggle buttons up when navigation bar is shown */
 body:not(.hide-nav) .lyrics-toggle-btn,
 body:not(.hide-nav) .word-sync-toggle-btn,
+body:not(.hide-nav) .resync-lyrics-btn,
 body:not(.hide-nav) .slideshow-toggle-btn,
 body:not(.hide-nav) .media-browser-toggle-btn {
     bottom: 56px; /* Above the thinner nav bar */
@@ -2288,6 +2345,7 @@ body.art-only-mode .top-right-controls,
 body.art-only-mode .bottom-nav,
 body.art-only-mode .lyrics-toggle-btn,
 body.art-only-mode .word-sync-toggle-btn,
+body.art-only-mode .resync-lyrics-btn,
 body.art-only-mode .slideshow-toggle-btn,
 body.art-only-mode .media-browser-toggle-btn,
 body.art-only-mode #provider-info,
