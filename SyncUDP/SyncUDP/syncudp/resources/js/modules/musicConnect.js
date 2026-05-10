@@ -21,6 +21,7 @@ const EXPLOSION_SPEED = 22;
 
 let panel = null;
 let svgEl = null;
+let blurLayerEl = null;
 let titleEl = null;
 let statusEl = null;
 let toggleBtn = null;
@@ -302,6 +303,41 @@ const drawFrame = () => {
 
         svgEl.appendChild(g);
     });
+
+    renderBlurDiscs();
+};
+
+// Per-bubble blur discs rendered into an HTML overlay behind the SVG.
+// Used only when the panel is in transparent + readable mode — gives
+// each bubble its own circular frosted patch (instead of one big
+// rectangle behind the whole graph).
+const renderBlurDiscs = () => {
+    if (!blurLayerEl) return;
+    while (blurLayerEl.firstChild) blurLayerEl.removeChild(blurLayerEl.firstChild);
+    if (!(transparentBg && readabilityBlur)) return;
+
+    const addDisc = (x, y, r, opacity, isActive) => {
+        if (!isFinite(x) || !isFinite(y) || !(r > 0)) return;
+        if ((opacity ?? 0) <= 0.02) return;
+        // Slightly larger than the bubble so the frost extends a touch
+        // past the rim and gives the label outline room to breathe.
+        const halo = r * 1.18;
+        const d = document.createElement('div');
+        d.className = isActive ? 'mc-blur-disc mc-blur-disc-active' : 'mc-blur-disc';
+        d.style.width = `${halo * 2}px`;
+        d.style.height = `${halo * 2}px`;
+        d.style.left = `${x - halo}px`;
+        d.style.top = `${y - halo}px`;
+        d.style.opacity = String(Math.min(1, Math.max(0, opacity)));
+        blurLayerEl.appendChild(d);
+    };
+
+    if (activeFit) {
+        addDisc(cx, cy, activeFit.radius * activeScale, activeOpacity, true);
+    }
+    nodes.forEach((n) => {
+        addDisc(n.x, n.y, n.r * (n.scale ?? 1), n.opacity ?? 1, false);
+    });
 };
 
 // ---------------- Animation loop ----------------
@@ -386,9 +422,10 @@ const tickAnimation = () => {
                 setTimeout(() => { activeScale = 1.05; }, 120);
                 setTimeout(() => { activeScale = 1; phase = 'settle'; }, 300);
             }
-        } else {
-            phase = 'idle';
         }
+        // No `else { phase = 'idle' }` — staying here while nodes are still
+        // being fetched is exactly what we want. Otherwise a slow Last.fm
+        // response misses the fly-in window and bubbles render at opacity 0.
     } else if (phase === 'pop-in') {
         activePopMs += 16;
         const t = activePopMs;
@@ -924,6 +961,11 @@ const loadArtist = async (rawArtist, force = false) => {
             return;
         }
         nodes = buildNodes(list.slice(0, 20));
+        // Explicitly (re-)enter the fly-in phase. The pop-in animation may
+        // already have completed and dropped us into idle / settle while the
+        // Last.fm fetch was in flight; without this the bubbles would sit at
+        // opacity 0 forever.
+        phase = 'fly-in-new-neighbours';
     } catch (err) {
         console.warn('[MusicConnect] failed to load similar artists', err);
         setStatus(err.message || 'Could not load similar artists.', true);
@@ -1010,6 +1052,7 @@ const ensurePanel = () => {
                 </label>
             </div>
             <div class="music-connect-graph">
+                <div class="mc-blur-layer" id="music-connect-blur-layer" aria-hidden="true"></div>
                 <svg id="music-connect-svg" preserveAspectRatio="xMidYMid meet"></svg>
             </div>
             <div class="music-connect-status" id="music-connect-status"></div>
@@ -1029,6 +1072,7 @@ const ensurePanel = () => {
 
     titleEl = panel.querySelector('#music-connect-title');
     svgEl = panel.querySelector('#music-connect-svg');
+    blurLayerEl = panel.querySelector('#music-connect-blur-layer');
     statusEl = panel.querySelector('#music-connect-status');
     albumsListEl = panel.querySelector('#music-connect-albums');
     tracksListEl = panel.querySelector('#music-connect-tracks');
