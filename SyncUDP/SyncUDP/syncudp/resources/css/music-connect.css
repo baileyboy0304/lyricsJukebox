@@ -661,3 +661,78 @@ body.music-connect-open #player-ui-container {
 .music-connect-panel.transparent .music-connect-status {
     text-shadow: 0 1px 4px rgba(0, 0, 0, 0.7);
 }
+
+/* ---------- Readability blur ----------
+   When the user enables transparent background, bright artwork can make
+   the cards / labels hard to read. The "Readability blur" toggle adds a
+   localised backdrop-blur behind every text-bearing surface so each
+   pill / card / heading sits on its own frosted patch without bringing
+   back a full-panel mask.
+
+   Only applies when `transparent` is also set — without transparency
+   these surfaces already have a dark fill and a second blur layer
+   would just make them hazier. */
+.music-connect-panel.transparent.readable .music-connect-search-input,
+.music-connect-panel.transparent.readable .music-connect-toggle,
+.music-connect-panel.transparent.readable .music-connect-close {
+    backdrop-filter: blur(10px) saturate(140%);
+    -webkit-backdrop-filter: blur(10px) saturate(140%);
+}
+
+.music-connect-panel.transparent.readable .mc-media-column h4 {
+    background: rgba(15, 17, 25, 0.42);
+    backdrop-filter: blur(10px) saturate(140%);
+    -webkit-backdrop-filter: blur(10px) saturate(140%);
+}
+
+.music-connect-panel.transparent.readable .mc-card {
+    background: rgba(15, 17, 25, 0.32);
+    backdrop-filter: blur(10px) saturate(140%);
+    -webkit-backdrop-filter: blur(10px) saturate(140%);
+}
+
+.music-connect-panel.transparent.readable .mc-card:hover {
+    background: rgba(15, 17, 25, 0.48);
+}
+
+.music-connect-panel.transparent.readable .mc-album-track {
+    background: rgba(15, 17, 25, 0.30);
+    backdrop-filter: blur(10px) saturate(140%);
+    -webkit-backdrop-filter: blur(10px) saturate(140%);
+}
+
+.music-connect-panel.transparent.readable .music-connect-status {
+    /* Pill-shaped frosted patch around the status line. */
+    display: inline-block;
+    align-self: center;
+    padding: 4px 12px;
+    border-radius: 999px;
+    background: rgba(15, 17, 25, 0.42);
+    backdrop-filter: blur(10px) saturate(140%);
+    -webkit-backdrop-filter: blur(10px) saturate(140%);
+}
+
+/* Soften the bubble-graph viewport too: a faint blurred halo behind the
+   network so labels read clearly on bright artwork without obscuring
+   the artwork itself. Sits behind the SVG via a sibling pseudo-element. */
+.music-connect-panel.transparent.readable .music-connect-graph::before {
+    content: '';
+    position: absolute;
+    inset: 8px;
+    border-radius: 24px;
+    background: radial-gradient(
+        ellipse at center,
+        rgba(15, 17, 25, 0.42) 0%,
+        rgba(15, 17, 25, 0.28) 55%,
+        rgba(15, 17, 25, 0) 100%
+    );
+    backdrop-filter: blur(10px) saturate(140%);
+    -webkit-backdrop-filter: blur(10px) saturate(140%);
+    pointer-events: none;
+    z-index: 0;
+}
+
+.music-connect-panel.transparent.readable .music-connect-graph svg {
+    position: relative;
+    z-index: 1;
+}
