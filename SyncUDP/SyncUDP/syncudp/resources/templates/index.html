@@ -308,7 +308,15 @@
     <i class="bi bi-stars"></i>
 </button>
 
-<!-- NEW: Slideshow Toggle Button (next to word-sync) -->
+<!-- NEW: Re-sync Lyrics Button (between word-sync and slideshow) -->
+<!-- A circular-arrow icon ("retry") — pressed when the lyric tracker is
+     drifting; drops the position lock so recognition re-runs its 3-check
+     verification and re-establishes the timeline. -->
+<button id="btn-resync-lyrics" class="resync-lyrics-btn" title="Re-sync Lyrics (recognition will re-verify)">
+    <i class="bi bi-arrow-repeat"></i>
+</button>
+
+<!-- NEW: Slideshow Toggle Button (next to re-sync) -->
 <button id="btn-slideshow-toggle" class="slideshow-toggle-btn" title="Toggle Slideshow">
     <i class="ph-fill ph-film-slate"></i>
 </button>
