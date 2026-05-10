@@ -36,7 +36,8 @@ import {
     refetchArt as apiRefetchArt,
     toggleInstrumentalMark as apiToggleInstrumental,
     saveBackgroundStyle,
-    getCurrentTrack
+    getCurrentTrack,
+    withPlayerScope
 } from './api.js';
 import {
     getCurrentBackgroundStyle,
@@ -569,8 +570,9 @@ export async function toggleInstrumentalMark() {
                 btn.classList.remove('active');
             }
 
-            // Force refresh lyrics
-            const lyricsResponse = await fetch('/lyrics');
+            // Force refresh lyrics — scope to the current tab's player so
+            // multi-instance UDP setups pull the right player's lyrics.
+            const lyricsResponse = await fetch(withPlayerScope('/lyrics'));
             const lyricsData = await lyricsResponse.json();
 
             const updatedTrackData = await getCurrentTrack();

@@ -10,7 +10,8 @@ import {
     getAudioRecognitionDevices,
     startAudioRecognition,
     stopAudioRecognition,
-    getAudioRecognitionStatus
+    getAudioRecognitionStatus,
+    withPlayerScope
 } from './api.js';
 
 import { showToast } from './dom.js';
@@ -211,7 +212,7 @@ async function refreshStatus() {
         // Fix 3.1: Correct endpoint is /current-track, not /api/track/current
         if (!isActive) {
             try {
-                const response = await fetch('/current-track');
+                const response = await fetch(withPlayerScope('/current-track'));
                 const trackData = await response.json();
                 if (trackData && trackData.source) {
                     currentTrackSource = trackData.source;
