@@ -712,27 +712,45 @@ body.music-connect-open #player-ui-container {
     -webkit-backdrop-filter: blur(10px) saturate(140%);
 }
 
-/* Soften the bubble-graph viewport too: a faint blurred halo behind the
-   network so labels read clearly on bright artwork without obscuring
-   the artwork itself. Sits behind the SVG via a sibling pseudo-element. */
-.music-connect-panel.transparent.readable .music-connect-graph::before {
-    content: '';
+/* Per-bubble blur discs.
+   The bubble graph is SVG, and CSS backdrop-filter doesn't apply to SVG
+   elements — so we render an HTML overlay behind the SVG containing one
+   small circular div per bubble (active + each related). Each disc has
+   its own backdrop-filter, giving a localised frosted halo around each
+   bubble instead of one big rectangle covering the whole graph. JS
+   keeps the discs in sync with the SVG positions every frame. */
+.mc-blur-layer {
     position: absolute;
-    inset: 8px;
-    border-radius: 24px;
-    background: radial-gradient(
-        ellipse at center,
-        rgba(15, 17, 25, 0.42) 0%,
-        rgba(15, 17, 25, 0.28) 55%,
-        rgba(15, 17, 25, 0) 100%
-    );
-    backdrop-filter: blur(10px) saturate(140%);
-    -webkit-backdrop-filter: blur(10px) saturate(140%);
+    inset: 0;
     pointer-events: none;
+    display: none;
     z-index: 0;
 }
 
-.music-connect-panel.transparent.readable .music-connect-graph svg {
+.music-connect-panel.transparent.readable .mc-blur-layer {
+    display: block;
+}
+
+.mc-blur-disc {
+    position: absolute;
+    border-radius: 50%;
+    background: rgba(15, 17, 25, 0.18);
+    backdrop-filter: blur(12px) saturate(140%);
+    -webkit-backdrop-filter: blur(12px) saturate(140%);
+    pointer-events: none;
+    will-change: left, top, width, height, opacity;
+    /* Soft falloff at the edge so the frost fades into the artwork
+       instead of cutting hard against an unblurred background. */
+    -webkit-mask-image: radial-gradient(circle, #000 55%, transparent 100%);
+    mask-image: radial-gradient(circle, #000 55%, transparent 100%);
+}
+
+.mc-blur-disc-active {
+    background: rgba(15, 17, 25, 0.28);
+}
+
+/* SVG layer renders on top of the blur discs. */
+.music-connect-graph svg {
     position: relative;
     z-index: 1;
 }
