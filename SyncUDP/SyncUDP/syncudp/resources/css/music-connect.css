@@ -587,3 +587,77 @@ body.music-connect-open #player-ui-container {
         padding: 18px 16px;
     }
 }
+
+/* ---------- Transparent-background mode ----------
+   When the user toggles "Transparent background" the panel chrome
+   disappears so the lyrics artwork shows through behind the bubble
+   network and album/track lists. We strip every visual layer that was
+   masking the artwork: panel fill, panel blur, panel border/shadow,
+   and the per-column / per-card backgrounds in the media area. Text
+   keeps its outline / drop-shadow so labels stay legible against a
+   bright background. */
+.music-connect-panel.transparent {
+    background: transparent;
+    backdrop-filter: none;
+    -webkit-backdrop-filter: none;
+    border-left: 1px solid rgba(255, 255, 255, 0.08);
+    box-shadow: none;
+}
+
+.music-connect-panel.transparent .music-connect-header {
+    border-bottom-color: rgba(255, 255, 255, 0.12);
+}
+
+.music-connect-panel.transparent .music-connect-search-input {
+    background: rgba(0, 0, 0, 0.32);
+    border-color: rgba(255, 255, 255, 0.18);
+}
+
+.music-connect-panel.transparent .music-connect-toggle {
+    background: rgba(0, 0, 0, 0.28);
+    border-color: rgba(255, 255, 255, 0.18);
+    color: rgba(245, 248, 255, 0.92);
+}
+
+.music-connect-panel.transparent .mc-media-column {
+    background: transparent;
+    border-color: rgba(255, 255, 255, 0.16);
+}
+
+.music-connect-panel.transparent .mc-media-column h4 {
+    background: transparent;
+    border-bottom-color: rgba(255, 255, 255, 0.16);
+    color: rgba(245, 248, 255, 0.85);
+    /* Slight shadow so the section header reads against bright artwork. */
+    text-shadow: 0 1px 4px rgba(0, 0, 0, 0.55);
+}
+
+.music-connect-panel.transparent .mc-card {
+    background: transparent;
+    border-color: rgba(255, 255, 255, 0.18);
+}
+
+.music-connect-panel.transparent .mc-card-title,
+.music-connect-panel.transparent .mc-card-sub {
+    text-shadow: 0 1px 4px rgba(0, 0, 0, 0.7);
+}
+
+.music-connect-panel.transparent .mc-card:hover {
+    background: rgba(0, 0, 0, 0.18);
+    border-color: rgba(255, 255, 255, 0.28);
+}
+
+.music-connect-panel.transparent .mc-album-track {
+    background: transparent;
+    border-color: rgba(255, 255, 255, 0.18);
+    color: rgba(245, 248, 255, 0.92);
+    text-shadow: 0 1px 4px rgba(0, 0, 0, 0.7);
+}
+
+.music-connect-panel.transparent .music-connect-close {
+    background: rgba(0, 0, 0, 0.32);
+}
+
+.music-connect-panel.transparent .music-connect-status {
+    text-shadow: 0 1px 4px rgba(0, 0, 0, 0.7);
+}

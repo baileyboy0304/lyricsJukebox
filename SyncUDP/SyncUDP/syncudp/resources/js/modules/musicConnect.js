@@ -29,6 +29,7 @@ let tracksListEl = null;
 let searchInputEl = null;
 let exploreBtnEl = null;
 let showLinesCheckboxEl = null;
+let transparentBgCheckboxEl = null;
 
 let isOpen = false;
 let isLoadingMedia = false;
@@ -37,6 +38,13 @@ let showLines = (() => {
         const v = localStorage.getItem('music-connect:show-lines');
         return v === null ? true : v === '1';
     } catch (e) { return true; }
+})();
+
+let transparentBg = (() => {
+    try {
+        const v = localStorage.getItem('music-connect:transparent-bg');
+        return v === '1';
+    } catch (e) { return false; }
 })();
 
 let currentArtist = '';
@@ -984,6 +992,10 @@ const ensurePanel = () => {
                     <input type="checkbox" id="music-connect-show-lines">
                     <span>Show connections</span>
                 </label>
+                <label class="music-connect-toggle">
+                    <input type="checkbox" id="music-connect-transparent-bg">
+                    <span>Transparent background</span>
+                </label>
             </div>
             <div class="music-connect-graph">
                 <svg id="music-connect-svg" preserveAspectRatio="xMidYMid meet"></svg>
@@ -1012,12 +1024,21 @@ const ensurePanel = () => {
     exploreBtnEl = panel.querySelector('#music-connect-explore');
     showLinesCheckboxEl = panel.querySelector('#music-connect-show-lines');
     showLinesCheckboxEl.checked = showLines;
+    transparentBgCheckboxEl = panel.querySelector('#music-connect-transparent-bg');
+    transparentBgCheckboxEl.checked = transparentBg;
+    applyTransparentBg();
 
     panel.querySelector('#music-connect-close')?.addEventListener('click', () => closePanel());
 
     showLinesCheckboxEl.addEventListener('change', (e) => {
         showLines = !!e.target.checked;
         try { localStorage.setItem('music-connect:show-lines', showLines ? '1' : '0'); } catch (err) { /* ignore */ }
+    });
+
+    transparentBgCheckboxEl.addEventListener('change', (e) => {
+        transparentBg = !!e.target.checked;
+        try { localStorage.setItem('music-connect:transparent-bg', transparentBg ? '1' : '0'); } catch (err) { /* ignore */ }
+        applyTransparentBg();
     });
 
     const submitSearch = () => {
@@ -1190,6 +1211,11 @@ const setupResizeHandle = () => {
 
 const setBodyOpenState = (open) => {
     document.body.classList.toggle('music-connect-open', !!open);
+};
+
+const applyTransparentBg = () => {
+    if (panel) panel.classList.toggle('transparent', !!transparentBg);
+    document.body.classList.toggle('music-connect-transparent', !!transparentBg);
 };
 
 const openPanel = async () => {
