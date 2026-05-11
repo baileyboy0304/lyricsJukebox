@@ -201,12 +201,39 @@ const setStatus = (text, isError = false) => {
 };
 
 // ---------------- Bubble graph rendering ----------------
+//
+// Performance: this used to tear down the entire SVG + blur-disc layer and
+// rebuild every element from scratch each animation frame, plus attach four
+// fresh pointer closures per bubble per frame. On a 60Hz Android tablet
+// that's ~10k DOM ops/sec and 20 separate backdrop-filter passes per frame.
+//
+// New scheme: every node owns its DOM elements (group / circle / labels /
+// blur disc / connector line), created once when the artist loads or the
+// layout changes. The animation loop only mutates `transform` / `opacity`
+// (plus line endpoints) on the existing elements — handful of attribute
+// writes per frame.
+//
+// Pointer events are delegated to the SVG root so we don't bind handlers
+// per bubble at all.
 
-const ensureSvg = () => {
+let svgInited = false;
+let activeGroupEl = null;
+let activeBlurDiscEl = null;
+let activeBubbleCircleEl = null;
+let activeTextEl = null;
+let linesGroupEl = null;
+let bubblesLayerEl = null;
+
+const ensureSvgRoot = () => {
     if (!svgEl) return;
+    if (svgInited) {
+        svgEl.setAttribute('viewBox', `0 0 ${panelWidth} ${panelHeight}`);
+        return;
+    }
     while (svgEl.firstChild) svgEl.removeChild(svgEl.firstChild);
     svgEl.setAttribute('viewBox', `0 0 ${panelWidth} ${panelHeight}`);
 
+    // <defs> for the active-bubble gradient — built once.
     const defs = document.createElementNS(SVG_NS, 'defs');
     const grad = document.createElementNS(SVG_NS, 'radialGradient');
     grad.setAttribute('id', 'mc-active-grad');
@@ -225,6 +252,29 @@ const ensureSvg = () => {
     });
     defs.appendChild(grad);
     svgEl.appendChild(defs);
+
+    // Render order: connectors -> active centre -> satellite bubbles.
+    linesGroupEl = document.createElementNS(SVG_NS, 'g');
+    // Group class drives a single drop-shadow filter in CSS so we don't
+    // pay for 20 individual filter passes on every frame.
+    linesGroupEl.setAttribute('class', 'mc-connectors');
+    svgEl.appendChild(linesGroupEl);
+
+    // Active centre group is built lazily in rebuildActive() when
+    // `activeFit` is known.
+
+    bubblesLayerEl = document.createElementNS(SVG_NS, 'g');
+    bubblesLayerEl.setAttribute('class', 'mc-bubbles-layer');
+    svgEl.appendChild(bubblesLayerEl);
+
+    // Delegated pointer events — one set of listeners on the SVG root,
+    // never re-attached per frame.
+    svgEl.addEventListener('pointerdown', delegatedPointerDown);
+    svgEl.addEventListener('pointermove', delegatedPointerMove);
+    svgEl.addEventListener('pointerup', delegatedPointerUp);
+    svgEl.addEventListener('pointercancel', delegatedPointerUp);
+
+    svgInited = true;
 };
 
 const renderTextRuns = (lines, fontSize, lineHeight, className) => {
@@ -244,46 +294,66 @@ const renderTextRuns = (lines, fontSize, lineHeight, className) => {
     return text;
 };
 
-const drawFrame = () => {
-    if (!svgEl) return;
-    ensureSvg();
-
-    if (showLines && nodes.length && activeFit) {
-        const linesG = document.createElementNS(SVG_NS, 'g');
-        nodes.forEach((n) => {
-            if (n.selected) return;
-            const line = document.createElementNS(SVG_NS, 'line');
-            line.setAttribute('class', 'mc-connector');
-            line.setAttribute('x1', String(Math.round(cx)));
-            line.setAttribute('y1', String(Math.round(cy)));
-            line.setAttribute('x2', String(Math.round(n.x)));
-            line.setAttribute('y2', String(Math.round(n.y)));
-            line.setAttribute('stroke', n.stroke);
-            line.setAttribute('stroke-opacity', String((n.opacity || 0) * 0.35));
-            line.setAttribute('stroke-width', '1.2');
-            linesG.appendChild(line);
-        });
-        svgEl.appendChild(linesG);
+// Build (or rebuild, when activeFit's text/radius changes) the SVG group
+// for the active centre bubble. The transform / opacity get mutated each
+// frame; structure stays put.
+const rebuildActive = () => {
+    if (!svgEl || !svgInited) return;
+    if (activeGroupEl) {
+        activeGroupEl.parentNode?.removeChild(activeGroupEl);
+        activeGroupEl = null;
+        activeBubbleCircleEl = null;
+        activeTextEl = null;
     }
+    if (!activeFit) return;
+    const g = document.createElementNS(SVG_NS, 'g');
+    g.setAttribute('class', 'mc-active');
+    const c = document.createElementNS(SVG_NS, 'circle');
+    c.setAttribute('class', 'mc-active-bubble');
+    c.setAttribute('r', String(activeFit.radius));
+    g.appendChild(c);
+    const label = renderTextRuns(activeFit.lines, activeFit.fontSize, activeFit.lineHeight, 'mc-active-label');
+    g.appendChild(label);
+    // Active group sits between the connectors layer and the satellite layer.
+    svgEl.insertBefore(g, bubblesLayerEl);
+    activeGroupEl = g;
+    activeBubbleCircleEl = c;
+    activeTextEl = label;
+};
 
-    if (activeFit) {
-        const g = document.createElementNS(SVG_NS, 'g');
-        g.setAttribute('transform', `translate(${Math.round(cx)},${Math.round(cy)}) scale(${activeScale.toFixed(3)})`);
-        g.setAttribute('opacity', String(activeOpacity));
-        const c = document.createElementNS(SVG_NS, 'circle');
-        c.setAttribute('class', 'mc-active-bubble');
-        c.setAttribute('r', String(activeFit.radius));
-        g.appendChild(c);
-        g.appendChild(renderTextRuns(activeFit.lines, activeFit.fontSize, activeFit.lineHeight, 'mc-active-label'));
-        svgEl.appendChild(g);
-    }
+// Build (or rebuild) the per-node SVG groups + connector lines + blur
+// discs. Called when the artist's similar-artist list changes or when
+// the layout was recomputed (which can change per-bubble radius/labels).
+// Each node ends up owning these DOM refs:
+//   n._g          satellite <g class="mc-bubble">
+//   n._lineEl     connector <line> (1:1 with the node, hidden when selected)
+//   n._discEl     readability-blur <div> (only created in transparent+readable mode)
+const rebuildNodes = () => {
+    if (!svgEl || !svgInited) return;
+    if (!bubblesLayerEl || !linesGroupEl) return;
 
-    nodes.forEach((n) => {
+    // Clear children of both layers in one go.
+    while (bubblesLayerEl.firstChild) bubblesLayerEl.removeChild(bubblesLayerEl.firstChild);
+    while (linesGroupEl.firstChild) linesGroupEl.removeChild(linesGroupEl.firstChild);
+
+    for (const n of nodes) {
+        // --- Connector line ---
+        const ln = document.createElementNS(SVG_NS, 'line');
+        ln.setAttribute('class', 'mc-connector');
+        ln.setAttribute('stroke', n.stroke);
+        ln.setAttribute('stroke-width', '1.2');
+        ln.setAttribute('x1', String(Math.round(cx)));
+        ln.setAttribute('y1', String(Math.round(cy)));
+        ln.setAttribute('x2', String(Math.round(n.x)));
+        ln.setAttribute('y2', String(Math.round(n.y)));
+        ln.setAttribute('stroke-opacity', '0');
+        linesGroupEl.appendChild(ln);
+        n._lineEl = ln;
+
+        // --- Bubble group ---
         const g = document.createElementNS(SVG_NS, 'g');
         g.setAttribute('class', 'mc-bubble');
-        g.setAttribute('transform', `translate(${Math.round(n.x)},${Math.round(n.y)}) scale(${(n.scale || 1).toFixed(3)})`);
-        g.setAttribute('opacity', String(n.opacity ?? 1));
-        g.setAttribute('data-node-id', n.id);
+        g.dataset.nodeId = n.id;
 
         const hit = document.createElementNS(SVG_NS, 'circle');
         hit.setAttribute('r', String(n.r + 10));
@@ -303,52 +373,125 @@ const drawFrame = () => {
         title.textContent = `${n.name} (${(n.similarity * 100).toFixed(0)}% match) — click to explore`;
         g.appendChild(title);
 
-        g.addEventListener('pointerdown', (e) => onPointerDownNode(e, n));
-        g.addEventListener('pointermove', onPointerMoveNode);
-        g.addEventListener('pointerup', onPointerUpNode);
-        g.addEventListener('pointercancel', onPointerUpNode);
+        bubblesLayerEl.appendChild(g);
+        n._g = g;
+    }
 
-        svgEl.appendChild(g);
-    });
-
-    renderBlurDiscs();
+    rebuildBlurDiscs();
 };
 
-// Per-bubble blur discs rendered into an HTML overlay behind the SVG.
-// Used only when the panel is in transparent + readable mode — gives
-// each bubble its own circular frosted patch (instead of one big
-// rectangle behind the whole graph).
-const renderBlurDiscs = () => {
+const rebuildBlurDiscs = () => {
     if (!blurLayerEl) return;
     while (blurLayerEl.firstChild) blurLayerEl.removeChild(blurLayerEl.firstChild);
+    // Clear stashed refs from the previous render.
+    for (const n of nodes) { if (n._discEl) n._discEl = null; }
+
     if (!(transparentBg && readabilityBlur)) return;
 
-    const addDisc = (x, y, r, opacity, isActive) => {
-        if (!isFinite(x) || !isFinite(y) || !(r > 0)) return;
-        if ((opacity ?? 0) <= 0.02) return;
-        // Active centre needs slightly more breathing room than satellites
-        // (the line endpoints all converge here and the larger label needs
-        // the frost to extend a touch past the rim) — but only slightly.
-        // 1.55 was too aggressive; the surrounding artwork should still
-        // dominate the panel.
-        const haloMult = isActive ? 1.25 : 1.18;
-        const halo = r * haloMult;
-        const d = document.createElement('div');
-        d.className = isActive ? 'mc-blur-disc mc-blur-disc-active' : 'mc-blur-disc';
-        d.style.width = `${halo * 2}px`;
-        d.style.height = `${halo * 2}px`;
-        d.style.left = `${x - halo}px`;
-        d.style.top = `${y - halo}px`;
-        d.style.opacity = String(Math.min(1, Math.max(0, opacity)));
-        blurLayerEl.appendChild(d);
-    };
-
+    // Active disc first.
     if (activeFit) {
-        addDisc(cx, cy, activeFit.radius * activeScale, activeOpacity, true);
+        const d = document.createElement('div');
+        d.className = 'mc-blur-disc mc-blur-disc-active';
+        blurLayerEl.appendChild(d);
+        // Stash on a module-level ref so the frame loop can find it.
+        activeBlurDiscEl = d;
     }
-    nodes.forEach((n) => {
-        addDisc(n.x, n.y, n.r * (n.scale ?? 1), n.opacity ?? 1, false);
-    });
+    for (const n of nodes) {
+        const d = document.createElement('div');
+        d.className = 'mc-blur-disc';
+        blurLayerEl.appendChild(d);
+        n._discEl = d;
+    }
+};
+
+// Called after rebuildNodes when the layout is recomputed (resize) so the
+// pre-existing circles / labels reflect the new radii without a full
+// teardown. Strings only: we don't recreate elements.
+const updateNodeShapeAttrs = () => {
+    for (const n of nodes) {
+        if (!n._g) continue;
+        const c = n._g.children[1]; // hit, related-bubble, label, title
+        if (c && c.tagName === 'circle') c.setAttribute('r', String(n.r));
+        const hit = n._g.children[0];
+        if (hit && hit.tagName === 'circle') hit.setAttribute('r', String(n.r + 10));
+    }
+};
+
+// Per-frame mutation pass — just transform / opacity / line endpoints on
+// the existing elements. No element creation, no event listener churn.
+const drawFrame = () => {
+    if (!svgEl) return;
+    ensureSvgRoot();
+
+    // Active centre.
+    if (activeGroupEl && activeFit) {
+        activeGroupEl.setAttribute(
+            'transform',
+            `translate(${Math.round(cx)},${Math.round(cy)}) scale(${activeScale.toFixed(3)})`,
+        );
+        activeGroupEl.setAttribute('opacity', String(activeOpacity));
+    }
+
+    // Satellites + connectors.
+    const showLinesNow = showLines && nodes.length && activeFit;
+    if (linesGroupEl) {
+        linesGroupEl.style.display = showLinesNow ? '' : 'none';
+    }
+    for (const n of nodes) {
+        if (n._g) {
+            n._g.setAttribute(
+                'transform',
+                `translate(${Math.round(n.x)},${Math.round(n.y)}) scale(${(n.scale ?? 1).toFixed(3)})`,
+            );
+            n._g.setAttribute('opacity', String(n.opacity ?? 1));
+        }
+        if (showLinesNow && n._lineEl) {
+            if (n.selected) {
+                n._lineEl.setAttribute('stroke-opacity', '0');
+            } else {
+                n._lineEl.setAttribute('x1', String(Math.round(cx)));
+                n._lineEl.setAttribute('y1', String(Math.round(cy)));
+                n._lineEl.setAttribute('x2', String(Math.round(n.x)));
+                n._lineEl.setAttribute('y2', String(Math.round(n.y)));
+                n._lineEl.setAttribute('stroke-opacity', String((n.opacity || 0) * 0.35));
+            }
+        }
+    }
+
+    // Blur discs (only present when transparent+readable).
+    if (blurLayerEl && transparentBg && readabilityBlur) {
+        if (activeBlurDiscEl && activeFit) {
+            const r = activeFit.radius * activeScale;
+            const halo = r * 1.25;
+            const op = Math.min(1, Math.max(0, activeOpacity));
+            if (isFinite(halo) && halo > 0 && op > 0.02) {
+                activeBlurDiscEl.style.display = '';
+                activeBlurDiscEl.style.width = `${halo * 2}px`;
+                activeBlurDiscEl.style.height = `${halo * 2}px`;
+                activeBlurDiscEl.style.left = `${cx - halo}px`;
+                activeBlurDiscEl.style.top = `${cy - halo}px`;
+                activeBlurDiscEl.style.opacity = String(op);
+            } else {
+                activeBlurDiscEl.style.display = 'none';
+            }
+        }
+        for (const n of nodes) {
+            if (!n._discEl) continue;
+            const r = n.r * (n.scale ?? 1);
+            const halo = r * 1.18;
+            const op = Math.min(1, Math.max(0, n.opacity ?? 1));
+            if (!isFinite(halo) || halo <= 0 || op <= 0.02) {
+                n._discEl.style.display = 'none';
+                continue;
+            }
+            n._discEl.style.display = '';
+            n._discEl.style.width = `${halo * 2}px`;
+            n._discEl.style.height = `${halo * 2}px`;
+            n._discEl.style.left = `${n.x - halo}px`;
+            n._discEl.style.top = `${n.y - halo}px`;
+            n._discEl.style.opacity = String(op);
+        }
+    }
 };
 
 // ---------------- Animation loop ----------------
@@ -507,13 +650,28 @@ const toSvg = (clientX, clientY) => {
     };
 };
 
-function onPointerDownNode(e, n) {
+// Delegated pointer handlers attached once to the SVG root. Each
+// satellite bubble group carries `data-node-id` so we can recover the
+// underlying node object via the `nodes` array.
+const findNodeFromEvent = (e) => {
+    const targetEl = e.target;
+    if (!targetEl || typeof targetEl.closest !== 'function') return null;
+    const g = targetEl.closest('g.mc-bubble');
+    if (!g) return null;
+    const id = g.dataset?.nodeId;
+    if (!id) return null;
+    return nodes.find((n) => n.id === id) || null;
+};
+
+function delegatedPointerDown(e) {
     if (phase !== 'idle' && phase !== 'settle') return;
-    try { e.currentTarget.setPointerCapture(e.pointerId); } catch (err) { /* ignore */ }
+    const node = findNodeFromEvent(e);
+    if (!node) return;
+    try { svgEl.setPointerCapture(e.pointerId); } catch (err) { /* ignore */ }
     const { x, y } = toSvg(e.clientX, e.clientY);
     drag = {
         pointerId: e.pointerId,
-        node: n,
+        node,
         startClientX: e.clientX,
         startClientY: e.clientY,
         lastSx: x,
@@ -523,7 +681,7 @@ function onPointerDownNode(e, n) {
     };
 }
 
-function onPointerMoveNode(e) {
+function delegatedPointerMove(e) {
     if (!drag || drag.pointerId !== e.pointerId) return;
     const dx = e.clientX - drag.startClientX;
     const dy = e.clientY - drag.startClientY;
@@ -539,9 +697,9 @@ function onPointerMoveNode(e) {
     drag.lastSx = x; drag.lastSy = y; drag.lastT = now;
 }
 
-function onPointerUpNode(e) {
+function delegatedPointerUp(e) {
     if (!drag || drag.pointerId !== e.pointerId) { drag = null; return; }
-    try { e.currentTarget.releasePointerCapture(e.pointerId); } catch (err) { /* ignore */ }
+    try { svgEl.releasePointerCapture(e.pointerId); } catch (err) { /* ignore */ }
     if (!drag.dragging) {
         const sel = drag.node;
         drag = null;
@@ -608,12 +766,25 @@ const buildNodes = (similar) => {
 
 const recomputeLayoutForResize = () => {
     measurePanel();
-    if (!nodes.length) return;
+    if (!nodes.length) {
+        // Active label might still need re-fitting (panel got wider/narrower)
+        // even when there are no satellites yet.
+        if (currentArtist) {
+            layout = computeLayout(panelWidth, panelHeight, 1);
+            activeFit = fitText(currentArtist, layout.activeR, layout.activeR + 24, [22, 20, 18, 16, 14], 3);
+            rebuildActive();
+        }
+        return;
+    }
     layout = computeLayout(panelWidth, panelHeight, nodes.length);
     const fontStack = [16, 14, 13, 12];
+    let labelsChanged = false;
     for (const n of nodes) {
         const baseR = layout.minBubbleR + n.norm * (layout.maxBubbleR - layout.minBubbleR);
         const fit = fitText(n.name, baseR, layout.maxBubbleR, fontStack, 3);
+        if (fit.lines.join('|') !== n.lines.join('|') || fit.fontSize !== n.fontSize) {
+            labelsChanged = true;
+        }
         n.r = fit.radius;
         n.lines = fit.lines;
         n.fontSize = fit.fontSize;
@@ -622,6 +793,15 @@ const recomputeLayoutForResize = () => {
     placeTargets(nodes);
     if (currentArtist) {
         activeFit = fitText(currentArtist, layout.activeR, layout.activeR + 24, [22, 20, 18, 16, 14], 3);
+        rebuildActive();
+    }
+    if (labelsChanged) {
+        // Text wrap or font size changed (e.g. panel got narrower) — full
+        // rebuild of the satellite layer. Common case (just radius/position)
+        // can stay as cheap attribute updates.
+        rebuildNodes();
+    } else {
+        updateNodeShapeAttrs();
     }
 };
 
@@ -959,6 +1139,11 @@ const loadArtist = async (rawArtist, force = false) => {
     layout = computeLayout(panelWidth, panelHeight, 1);
     activeFit = fitText(artist, layout.activeR, layout.activeR + 24, [22, 20, 18, 16, 14], 3);
     nodes = [];
+    // Active bubble's label / radius came from `fitText` above, so its
+    // SVG needs (re)building. Satellite list is empty so rebuild that
+    // layer too to drop the previous artist's DOM.
+    rebuildActive();
+    rebuildNodes();
     triggerActivePopIn();
 
     // Kick off media + similar in parallel
@@ -974,6 +1159,9 @@ const loadArtist = async (rawArtist, force = false) => {
             return;
         }
         nodes = buildNodes(list.slice(0, 20));
+        // New satellite list — build their DOM (groups, lines, blur discs)
+        // once here. Subsequent animation frames just mutate transforms.
+        rebuildNodes();
         // The pop-in animation only advances `activeOpacity`/`activeScale`
         // while `phase === 'pop-in'`. If the Last.fm fetch resolves from
         // cache (or any time before pop-in completes) we'd jump straight
@@ -1302,11 +1490,14 @@ const setBodyOpenState = (open) => {
 const applyTransparentBg = () => {
     if (panel) panel.classList.toggle('transparent', !!transparentBg);
     document.body.classList.toggle('music-connect-transparent', !!transparentBg);
+    // Blur discs are only created when both flags are on — keep them in sync.
+    rebuildBlurDiscs();
 };
 
 const applyReadabilityBlur = () => {
     if (panel) panel.classList.toggle('readable', !!readabilityBlur);
     document.body.classList.toggle('music-connect-readable', !!readabilityBlur);
+    rebuildBlurDiscs();
 };
 
 const openPanel = async () => {
