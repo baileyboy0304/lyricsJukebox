@@ -634,15 +634,25 @@ class MusicAssistantSource(BaseMetadataSource):
             queue_state = _state_str(queue.state)
             player_state = _state_str(player.playback_state)
 
-            # Log state changes to help debug flicker
+            # Log state changes to help debug flicker.
+            # Important: dedup on (player_state, has_current_item) only.
+            # `queue.state` is observed to oscillate between "playing" and
+            # "idle" between polls while the player is steadily playing,
+            # which used to spam a fresh INFO line every cycle. Only
+            # `player_state` drives `is_playing` below (line 660), so
+            # transient `queue_state` flicker is not actionable info.
             global _last_logged_ma_state
             if not hasattr(MusicAssistantSource, '_last_logged_ma_state'):
                 MusicAssistantSource._last_logged_ma_state = None
-                
-            current_state_tuple = (queue_state, player_state, queue.current_item is not None)
-            if MusicAssistantSource._last_logged_ma_state != current_state_tuple:
-                logger.info(f"MA state changed: queue_state={queue_state}, player_state={player_state}, has_current_item={current_state_tuple[2]}")
-                MusicAssistantSource._last_logged_ma_state = current_state_tuple
+
+            has_current_item = queue.current_item is not None
+            dedup_key = (player_state, has_current_item)
+            if MusicAssistantSource._last_logged_ma_state != dedup_key:
+                logger.info(
+                    f"MA state changed: queue_state={queue_state}, "
+                    f"player_state={player_state}, has_current_item={has_current_item}"
+                )
+                MusicAssistantSource._last_logged_ma_state = dedup_key
             
             # Determine staleness: how long since MA last updated the position
             # This distinguishes "just paused" from "stale session data from hours ago"
