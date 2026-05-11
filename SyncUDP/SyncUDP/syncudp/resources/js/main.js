@@ -422,6 +422,14 @@ async function updateLoop() {
     // "playing" unless MA has explicitly confirmed a paused state.  This prevents
     // the "no lyrics/wrong icon until toggle" symptom on app startup.
     let maConfirmedPause = false;
+    // Position-progress fallback: when MA's is_playing arrives null (e.g.
+    // MA momentarily disconnected) we look at whether the track position
+    // has advanced between polls. If it has, we're definitely playing —
+    // useful for unsticking the transport icon when MA was previously
+    // paused and then resumed externally while temporarily unreachable.
+    let lastPolledPositionSec = null;
+    let lastPolledPositionAt = 0;
+    let lastPolledTrackId = null;
 
     while (true) {
         const now = Date.now();
@@ -737,11 +745,54 @@ async function updateLoop() {
         updateAlbumArt(trackInfo, updateBackground);
         updateProgress(trackInfo);
 
+        // Detect whether the server-side position is actually advancing in
+        // real time. Strong signal of playback that doesn't depend on MA
+        // being reachable — when MA reports `is_playing: null` (which it
+        // does for a few seconds whenever the WebSocket flaps) the icon
+        // would otherwise stick on whatever state we last confirmed,
+        // even after the underlying player has resumed.
+        let positionAdvancing = null; // null = no signal, true/false = clear answer
+        const nowMs = Date.now();
+        const samePosTrack = lastPolledTrackId && lastPolledTrackId === trackId;
+        const curPosSec = typeof trackInfo.position === 'number' ? trackInfo.position : null;
+        if (samePosTrack && curPosSec !== null && lastPolledPositionSec !== null) {
+            const elapsedMs = nowMs - lastPolledPositionAt;
+            const deltaSec = curPosSec - lastPolledPositionSec;
+            if (elapsedMs > 150) {
+                // Expect ~elapsed real-time seconds of advance when playing,
+                // ~0 when paused. Treat anything over half real time as
+                // playing; anything below 1/10th as paused; otherwise leave
+                // the answer ambiguous so the fallback heuristic decides.
+                const expectedSec = elapsedMs / 1000;
+                if (deltaSec > expectedSec * 0.5) positionAdvancing = true;
+                else if (deltaSec < expectedSec * 0.1) positionAdvancing = false;
+            }
+        }
+        if (curPosSec !== null) {
+            lastPolledPositionSec = curPosSec;
+            lastPolledPositionAt = nowMs;
+            lastPolledTrackId = trackId;
+        }
+
         // Resolve is_playing for the UI: when MA state is unknown (null), use
-        // the heuristic — treat as "playing" unless MA previously said "paused".
-        let resolvedIsPlaying = trackInfo.is_playing === true ? true
-            : trackInfo.is_playing === false ? false
-                : !maConfirmedPause;
+        // the position-advance signal first, then fall back to the heuristic
+        // — treat as "playing" unless MA previously said "paused".
+        let resolvedIsPlaying;
+        if (trackInfo.is_playing === true) {
+            resolvedIsPlaying = true;
+        } else if (trackInfo.is_playing === false) {
+            resolvedIsPlaying = false;
+        } else if (positionAdvancing === true) {
+            // External player resumed while MA was briefly unreachable —
+            // clear the cached paused state so we don't snap back on the
+            // next null poll.
+            maConfirmedPause = false;
+            resolvedIsPlaying = true;
+        } else if (positionAdvancing === false) {
+            resolvedIsPlaying = false;
+        } else {
+            resolvedIsPlaying = !maConfirmedPause;
+        }
 
         // During the play/pause settle window the poll may read stale MA state.
         // Use the optimistic state recorded on button click instead so UI elements
