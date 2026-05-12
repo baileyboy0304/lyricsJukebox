@@ -665,9 +665,19 @@ class MusicAssistantSource(BaseMetadataSource):
             if queue_state == "idle" and is_stale:
                 return {"is_playing": False, "source": "music_assistant"}
             
-            # Use player.playback_state for is_playing (it updates faster than queue.state)
-            # Logs showed player goes playing→idle→playing faster than queue
-            is_playing = player_state == "playing"
+            # Treat as playing if EITHER the resolved player OR its queue
+            # reports "playing". The two fields disagree in real setups:
+            #   - Sync groups: the leader's queue.state is "playing" while a
+            #     child player's playback_state can be "idle"/"paused".
+            #   - Transient flap: player_state oscillates playing→idle→playing
+            #     between polls during steady playback (see commits 74985f3,
+            #     3f693a8); trusting only player_state lets a single bad poll
+            #     hand the frontend a hard `is_playing: false`, which sticks
+            #     the transport icon on "play" and freezes lyrics until the
+            #     user toggles playback manually.
+            # Using a union means a "playing" reading from either field wins,
+            # which matches what the MA UI itself shows.
+            is_playing = player_state == "playing" or queue_state == "playing"
             
             # Get current item from queue
             current_item = queue.current_item
