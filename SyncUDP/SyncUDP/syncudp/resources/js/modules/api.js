@@ -402,6 +402,13 @@ export async function getLyrics(updateBackgroundFn, updateThemeColorFn, updatePr
         let response = await fetch(withPlayerScope('/lyrics'));
         let data = await response.json();
 
+        // If /current-track moved into recognition-pending/no-music while this
+        // request was in flight, do not let old lyric data repopulate the UI.
+        if (lastTrackInfo && (lastTrackInfo.recognition_pending || lastTrackInfo.recognition_no_music || !lastTrackInfo.title)) {
+            console.log('[API] Discarding lyrics fetch result (recognition has no current music)');
+            return null;
+        }
+
         // Discard stale responses if the track changed while the request was in-flight
         if (expectedTrackId && lastTrackInfo && lastTrackInfo.normalized_track_id && lastTrackInfo.normalized_track_id !== expectedTrackId) {
             console.log('[API] Discarding stale lyrics fetch result (track changed during flight)');

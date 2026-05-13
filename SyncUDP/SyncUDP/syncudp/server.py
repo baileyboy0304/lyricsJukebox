@@ -409,10 +409,15 @@ async def _build_lyrics_response(player_scope: Optional[str]) -> dict:
 
 
 def _engine_status_has_no_music(status: Optional[dict]) -> bool:
-    """Return True once recognition has crossed its no-music threshold."""
-    if not status:
+    """Return True once recognition has strong evidence that music is absent."""
+    if not status or status.get("last_attempt_result") != "no_match":
         return False
-    return status.get("state") == "paused" and status.get("last_attempt_result") == "no_match"
+
+    # The recognizer can keep a cached last song while it is hearing adverts,
+    # speech, or station sweepers. Clear lyric identity before the full PAUSED
+    # transition so stale lines do not remain frozen for multiple polls.
+    no_match_count = status.get("consecutive_no_match") or 0
+    return status.get("state") == "paused" or no_match_count >= 3
 
 
 def _get_player_manager_if_running():

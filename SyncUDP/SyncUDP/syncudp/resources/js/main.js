@@ -39,7 +39,8 @@ import {
     setHasWordSync,
     setWordSyncedLyrics,
     setHasLineSync,
-    setLineSyncedLyrics
+    setLineSyncedLyrics,
+    setLastLyrics
 } from './modules/state.js';
 
 // Utils (Level 1)
@@ -499,7 +500,16 @@ async function updateLoop() {
             resetLineSyncState();
             stopWordSyncAnimation();
             stopLineSyncAnimation();
-            setLyricsInDom(['', '', '', '', '', '']);
+            const emptyLyrics = ['', '', '', '', '', ''];
+            setLyricsInDom(emptyLyrics);
+            setLastLyrics(emptyLyrics);
+            ['prev-2', 'prev-1', 'current', 'next-1', 'next-2', 'next-3'].forEach(id => {
+                const el = document.getElementById(id);
+                if (el) {
+                    el.textContent = '';
+                    el.classList.remove('word-sync-active', 'word-sync-fade', 'word-sync-pop', 'line-entering', 'line-exiting');
+                }
+            });
             setLastCheckTime(Date.now());
 
             await sleep(currentPollInterval);
