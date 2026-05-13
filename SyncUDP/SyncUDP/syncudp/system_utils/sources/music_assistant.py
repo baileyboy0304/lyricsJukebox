@@ -797,9 +797,12 @@ class MusicAssistantSource(BaseMetadataSource):
             # which matches what the MA UI itself shows.
             is_playing = player_state == "playing" or queue_state == "playing"
 
-            # Only return false if IDLE and STALE (prevents 688min bug from old sessions).
-            # When just paused, queue.state=idle but elapsed_time_last_updated is fresh.
-            if queue_state == "idle" and is_stale:
+            # Only return false for stale-idle when neither the queue nor the
+            # resolved coordinator player says it is playing. In sync-group
+            # playback MA can leave queue.state/elapsed_time stale while the
+            # coordinator player still reports playback_state=playing; treating
+            # that as paused is the failure mode that freezes lyrics.
+            if queue_state == "idle" and is_stale and not is_playing:
                 _log_selected_player_state_change(
                     target_id=target_id,
                     target_player=target_player,
@@ -811,6 +814,11 @@ class MusicAssistantSource(BaseMetadataSource):
                 )
                 return {"is_playing": False, "source": "music_assistant"}
 
+            if is_playing:
+                reason = "playing_signal_stale_queue" if queue_state == "idle" and is_stale else "playing_signal"
+            else:
+                reason = "not_playing_signal"
+
             _log_selected_player_state_change(
                 target_id=target_id,
                 target_player=target_player,
@@ -818,7 +826,7 @@ class MusicAssistantSource(BaseMetadataSource):
                 queue=queue,
                 coordinator_player=player,
                 is_playing=is_playing,
-                reason="playing_signal" if is_playing else "not_playing_signal",
+                reason=reason,
             )
             
             # Get current item from queue
