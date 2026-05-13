@@ -39,7 +39,8 @@ import {
     setHasWordSync,
     setWordSyncedLyrics,
     setHasLineSync,
-    setLineSyncedLyrics
+    setLineSyncedLyrics,
+    setLastLyrics
 } from './modules/state.js';
 
 // Utils (Level 1)
@@ -464,6 +465,57 @@ async function updateLoop() {
         // We also attach the normalized trackId to lastTrackInfo for reliability.
         setLastTrackInfo({...trackInfo, normalized_track_id: trackId});
 
+        // If the recognizer has no current music identity (startup, adverts,
+        // station sweepers, or the "No music detected" threshold), clear lyrics
+        // and reset the timecode immediately. Music Assistant may still report the
+        // selected media player as playing; that transport state is preserved in
+        // trackInfo.is_playing and sent to the controls, but it must not keep stale
+        // lyrics on screen.
+        if (trackInfo.error || !trackInfo.title) {
+            if (trackInfo && trackInfo.player) {
+                recordCurrentTrackPlayer(trackInfo.player);
+            }
+
+            updateTrackInfo(trackInfo);
+            updateAlbumArt(trackInfo, updateBackground);
+            updateProgress({ ...trackInfo, position: 0, duration_ms: 0 });
+            updateControlState(trackInfo);
+
+            if (!isIdleState) {
+                isIdleState = true;
+                idleStartTime = Date.now();
+            }
+
+            if (isIdleState && idleStartTime && (Date.now() - idleStartTime > IDLE_THRESHOLD)) {
+                currentPollInterval = IDLE_POLL_INTERVAL;
+            }
+
+            lastTrackId = null;
+            window._lastFetchedLyricsData = null;
+            setHasWordSync(false);
+            setWordSyncedLyrics(null);
+            setHasLineSync(false);
+            setLineSyncedLyrics(null);
+            resetWordSyncState();
+            resetLineSyncState();
+            stopWordSyncAnimation();
+            stopLineSyncAnimation();
+            const emptyLyrics = ['', '', '', '', '', ''];
+            setLyricsInDom(emptyLyrics);
+            setLastLyrics(emptyLyrics);
+            ['prev-2', 'prev-1', 'current', 'next-1', 'next-2', 'next-3'].forEach(id => {
+                const el = document.getElementById(id);
+                if (el) {
+                    el.textContent = '';
+                    el.classList.remove('word-sync-active', 'word-sync-fade', 'word-sync-pop', 'line-entering', 'line-exiting');
+                }
+            });
+            setLastCheckTime(Date.now());
+
+            await sleep(currentPollInterval);
+            continue;
+        }
+
         // Fetch lyrics asynchronously so it doesn't block the UI update loop
         if (!window._isFetchingLyrics) {
             window._isFetchingLyrics = true;
@@ -523,21 +575,6 @@ async function updateLoop() {
                     sourceBtn.textContent = sourceMap[trackInfo.source] || 'Idle';
                 }
             }
-        }
-
-        // Handle track info errors
-        if (trackInfo.error || !trackInfo.title) {
-            if (!isIdleState) {
-                isIdleState = true;
-                idleStartTime = Date.now();
-            }
-
-            if (isIdleState && idleStartTime && (Date.now() - idleStartTime > IDLE_THRESHOLD)) {
-                currentPollInterval = IDLE_POLL_INTERVAL;
-            }
-
-            await sleep(currentPollInterval);
-            continue;
         }
 
         // Reset idle state when we have valid track info
