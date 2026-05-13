@@ -59,6 +59,7 @@ _last_player_not_found_log: float = 0
 _last_queue_error_log: float = 0
 _last_metadata_error_log: float = 0
 _last_disconnect_log: float = 0
+_last_selected_player_state_log: Dict[str, tuple] = {}
 _connection_attempt_count: int = 0  # Track consecutive connection attempts
 LOG_THROTTLE_INTERVAL = 60.0  # Only log repeated messages once per minute
 
@@ -461,6 +462,119 @@ async def _get_active_queue_id(player_id: str) -> Optional[str]:
     return player_id
 
 
+def _player_label(player) -> Optional[str]:
+    """Return the most useful human-readable label for an MA player."""
+    if not player:
+        return None
+    for attr in ("display_name", "name", "player_id"):
+        value = getattr(player, attr, None)
+        if value:
+            return str(value)
+    return None
+
+
+def _current_item_label(queue) -> Optional[str]:
+    """Return a compact label for the queue's current item for state logs."""
+    item = getattr(queue, "current_item", None) if queue else None
+    if not item:
+        return None
+
+    media_item = getattr(item, "media_item", None)
+    if media_item:
+        title = getattr(media_item, "name", None) or getattr(item, "name", None)
+        artist = ""
+        artists = getattr(media_item, "artists", None)
+        if artists:
+            artist = getattr(artists[0], "name", "") or ""
+        elif getattr(media_item, "artist", None):
+            artist = str(media_item.artist)
+        if artist and title:
+            return f"{artist} - {title}"
+        if title:
+            return str(title)
+
+    return str(
+        getattr(item, "name", None)
+        or getattr(item, "queue_item_id", None)
+        or "<unknown item>"
+    )
+
+
+def _log_selected_player_state_change(
+    *,
+    target_id: Optional[str],
+    target_player,
+    queue_id: Optional[str],
+    queue,
+    coordinator_player,
+    is_playing: Optional[bool],
+    reason: str,
+) -> None:
+    """Log selected MA player/coordinator state whenever it changes.
+
+    The selected target player can differ from the player that owns the active
+    queue during sync-group playback. Logging both sides makes it clear whether
+    a child is idle/paused while its coordinator queue is still playing.
+    """
+    global _last_selected_player_state_log
+
+    target_state = (
+        _state_str(getattr(target_player, "playback_state", None), "missing")
+        if target_player else "missing"
+    )
+    queue_state = _state_str(getattr(queue, "state", None), "missing") if queue else "missing"
+    coordinator_state = (
+        _state_str(getattr(coordinator_player, "playback_state", None), "missing")
+        if coordinator_player else "missing"
+    )
+    coordinator_id = getattr(coordinator_player, "player_id", None) if coordinator_player else None
+    has_current_item = bool(getattr(queue, "current_item", None)) if queue else False
+    current_item = _current_item_label(queue)
+    elapsed_time = getattr(queue, "elapsed_time", None) if queue else None
+    corrected_elapsed_time = getattr(queue, "corrected_elapsed_time", None) if queue else None
+    updated_at = getattr(queue, "elapsed_time_last_updated", None) if queue else None
+    age = round(time.time() - updated_at, 3) if updated_at else None
+
+    cache_key = target_id or "<auto>"
+    state_key = (
+        target_id,
+        target_state,
+        queue_id,
+        queue_state,
+        coordinator_id,
+        coordinator_state,
+        is_playing,
+        reason,
+        has_current_item,
+        current_item,
+    )
+    if _last_selected_player_state_log.get(cache_key) == state_key:
+        return
+    _last_selected_player_state_log[cache_key] = state_key
+
+    logger.info(
+        "MA selected-player state changed: target_id=%r target_name=%r "
+        "target_state=%s queue_id=%r queue_state=%s coordinator_id=%r "
+        "coordinator_name=%r coordinator_state=%s is_playing=%s reason=%s "
+        "has_current_item=%s item=%r elapsed=%r corrected_elapsed=%r elapsed_age_s=%r",
+        target_id,
+        _player_label(target_player),
+        target_state,
+        queue_id,
+        queue_state,
+        coordinator_id,
+        _player_label(coordinator_player),
+        coordinator_state,
+        is_playing,
+        reason,
+        has_current_item,
+        current_item,
+        elapsed_time,
+        corrected_elapsed_time,
+        age,
+    )
+
+
 class MusicAssistantSource(BaseMetadataSource):
     """
     Music Assistant integration.
@@ -605,16 +719,36 @@ class MusicAssistantSource(BaseMetadataSource):
                     _last_no_player_log = now
                 return None
             
-            # 2. Get active queue for this target. 
+            target_player = _client.players.get(target_id) if _client else None
+
+            # 2. Get active queue for this target.
             # This is robust: MA automatically routes child players to their active sync group queue.
             queue_id = await _get_active_queue_id(target_id)
             if not queue_id:
                 logger.debug(f"MA get_metadata: no queue found for target {target_id}")
+                _log_selected_player_state_change(
+                    target_id=target_id,
+                    target_player=target_player,
+                    queue_id=None,
+                    queue=None,
+                    coordinator_player=None,
+                    is_playing=False,
+                    reason="no_active_queue",
+                )
                 return {"is_playing": False, "source": "music_assistant"}
             
             queue = _client.player_queues.get(queue_id)
             if not queue:
                 logger.debug(f"MA get_metadata: queue {queue_id} not found in client")
+                _log_selected_player_state_change(
+                    target_id=target_id,
+                    target_player=target_player,
+                    queue_id=queue_id,
+                    queue=None,
+                    coordinator_player=None,
+                    is_playing=False,
+                    reason="queue_not_cached",
+                )
                 return {"is_playing": False, "source": "music_assistant"}
                 
             # 3. Get the actual active player object handling playback (e.g., the Sync Group leader).
@@ -625,6 +759,15 @@ class MusicAssistantSource(BaseMetadataSource):
                 player = _client.players.get(target_id)
                 
             if not player:
+                _log_selected_player_state_change(
+                    target_id=target_id,
+                    target_player=target_player,
+                    queue_id=queue_id,
+                    queue=queue,
+                    coordinator_player=None,
+                    is_playing=None,
+                    reason="coordinator_player_not_found",
+                )
                 logger.info(f"MA get_metadata: returning None because player for queue {queue_id} not found")
                 return None
             
@@ -634,36 +777,11 @@ class MusicAssistantSource(BaseMetadataSource):
             queue_state = _state_str(queue.state)
             player_state = _state_str(player.playback_state)
 
-            # Log state changes to help debug flicker.
-            # Important: dedup on (player_state, has_current_item) only.
-            # `queue.state` is observed to oscillate between "playing" and
-            # "idle" between polls while the player is steadily playing,
-            # which used to spam a fresh INFO line every cycle. Only
-            # `player_state` drives `is_playing` below (line 660), so
-            # transient `queue_state` flicker is not actionable info.
-            global _last_logged_ma_state
-            if not hasattr(MusicAssistantSource, '_last_logged_ma_state'):
-                MusicAssistantSource._last_logged_ma_state = None
-
-            has_current_item = queue.current_item is not None
-            dedup_key = (player_state, has_current_item)
-            if MusicAssistantSource._last_logged_ma_state != dedup_key:
-                logger.info(
-                    f"MA state changed: queue_state={queue_state}, "
-                    f"player_state={player_state}, has_current_item={has_current_item}"
-                )
-                MusicAssistantSource._last_logged_ma_state = dedup_key
-            
             # Determine staleness: how long since MA last updated the position
             # This distinguishes "just paused" from "stale session data from hours ago"
             time_since_update = time.time() - queue.elapsed_time_last_updated
             paused_timeout = self.get_config().paused_timeout  # Default 600s (10 min)
             is_stale = time_since_update > paused_timeout
-            
-            # Only return None if IDLE and STALE (prevents 688min bug from old sessions)
-            # When just paused, queue.state=idle but elapsed_time_last_updated is fresh
-            if queue_state == "idle" and is_stale:
-                return {"is_playing": False, "source": "music_assistant"}
             
             # Treat as playing if EITHER the resolved player OR its queue
             # reports "playing". The two fields disagree in real setups:
@@ -678,6 +796,38 @@ class MusicAssistantSource(BaseMetadataSource):
             # Using a union means a "playing" reading from either field wins,
             # which matches what the MA UI itself shows.
             is_playing = player_state == "playing" or queue_state == "playing"
+
+            # Only return false for stale-idle when neither the queue nor the
+            # resolved coordinator player says it is playing. In sync-group
+            # playback MA can leave queue.state/elapsed_time stale while the
+            # coordinator player still reports playback_state=playing; treating
+            # that as paused is the failure mode that freezes lyrics.
+            if queue_state == "idle" and is_stale and not is_playing:
+                _log_selected_player_state_change(
+                    target_id=target_id,
+                    target_player=target_player,
+                    queue_id=queue_id,
+                    queue=queue,
+                    coordinator_player=player,
+                    is_playing=False,
+                    reason="stale_idle",
+                )
+                return {"is_playing": False, "source": "music_assistant"}
+
+            if is_playing:
+                reason = "playing_signal_stale_queue" if queue_state == "idle" and is_stale else "playing_signal"
+            else:
+                reason = "not_playing_signal"
+
+            _log_selected_player_state_change(
+                target_id=target_id,
+                target_player=target_player,
+                queue_id=queue_id,
+                queue=queue,
+                coordinator_player=player,
+                is_playing=is_playing,
+                reason=reason,
+            )
             
             # Get current item from queue
             current_item = queue.current_item

@@ -201,8 +201,10 @@ async def lyrics() -> dict:
     if player_scope:
         mgr = _get_player_manager_if_running()
         if mgr is not None:
-            scoped_song = mgr.get_current_song(player_scope)
-            if not scoped_song:
+            scoped_engine = mgr.get_engine(player_scope)
+            scoped_status = scoped_engine.get_status() if scoped_engine else {}
+            scoped_song = scoped_engine.get_current_song() if scoped_engine else None
+            if not scoped_song or _engine_status_has_no_music(scoped_status):
                 scoped_colors = ["#24273a", "#363b54"]
                 return {
                     "lyrics": [],
@@ -405,6 +407,14 @@ async def _build_lyrics_response(player_scope: Optional[str]) -> dict:
         "track_id": lyrics_track_id
     }
 
+
+def _engine_status_has_no_music(status: Optional[dict]) -> bool:
+    """Return True once recognition has crossed its no-music threshold."""
+    if not status:
+        return False
+    return status.get("state") == "paused" and status.get("last_attempt_result") == "no_match"
+
+
 def _get_player_manager_if_running():
     """Return the PlayerManager if multi-instance mode is active, else None."""
     import sys
@@ -427,19 +437,64 @@ def _player_name_from_request() -> Optional[str]:
     return name or None
 
 
+def _empty_player_track_payload(player_name: str) -> dict:
+    """Build a /current-track payload when recognition has no song yet.
+
+    Music Assistant can know that a selected player is actively playing before
+    the audio recognizer has identified music (for example during adverts or
+    station sweepers). Returning a normal payload lets the MA timeline/state
+    override below keep the UI's transport state in sync instead of short-
+    circuiting with an error until Shazam finds a track.
+    """
+    return {
+        "source": "audio_recognition",
+        "player": player_name,
+        "artist": "",
+        "title": "",
+        "album": None,
+        "album_art": None,
+        "album_art_url": None,
+        "artist_id": None,
+        "artist_name": "",
+        "track_id": None,
+        "id": None,
+        "position": 0.0,
+        "progress": 0,
+        "duration": 0,
+        "duration_ms": 0,
+        "is_playing": None,
+        "media_state_source": "unknown",
+        "isrc": None,
+        "spotify_url": None,
+        "colors": None,
+        "recognition_provider": None,
+        "recognition_pending": True,
+    }
+
+
 def _build_player_track_payload(player_name: str) -> Optional[dict]:
     """
     Build a /current-track-compatible payload directly from a player's
     RecognitionEngine, bypassing the multi-source metadata orchestrator.
-    Returns None if the player or its song is unknown.
+    Returns None if the player manager/player is unavailable. If the player
+    exists but recognition has no song yet, returns an empty pending payload.
     """
     mgr = _get_player_manager_if_running()
     if mgr is None:
         return None
-    song = mgr.get_current_song(player_name)
-    if not song:
+    engine = mgr.get_engine(player_name)
+    if engine is None:
         return None
-    position = mgr.get_current_position(player_name) or 0.0
+
+    status = engine.get_status()
+    song = engine.get_current_song()
+    recognition_has_no_music = _engine_status_has_no_music(status)
+    if not song or recognition_has_no_music:
+        payload = _empty_player_track_payload(player_name)
+        payload["recognition_no_music"] = bool(song and recognition_has_no_music)
+        return payload
+
+    position = engine.get_current_position() or 0.0
     duration_ms = song.get("duration_ms") or 0
     duration_sec = duration_ms / 1000.0 if duration_ms else 0
     artist = song.get("artist", "")
@@ -462,11 +517,15 @@ def _build_player_track_payload(player_name: str) -> Optional[dict]:
         "progress": int(position * 1000),
         "duration": duration_sec,
         "duration_ms": int(duration_ms),
-        "is_playing": True,
+        # Recognition identifies lyric content and estimates track position,
+        # but Music Assistant owns the media-player transport state.
+        "is_playing": None,
+        "media_state_source": "unknown",
         "isrc": song.get("isrc"),
         "spotify_url": song.get("spotify_url"),
         "colors": song.get("colors"),
         "recognition_provider": song.get("recognition_provider"),
+        "recognition_pending": False,
     }
     return metadata
 
@@ -656,8 +715,20 @@ async def current_track() -> dict:
                     # Only apply if MA has a valid track (artist + title both present).
                     ma_artist = ma_meta.get("artist")
                     ma_title = ma_meta.get("title")
+                    # When recognition has no music identity, keep the payload
+                    # title/artist empty so the frontend clears lyrics instead of
+                    # showing stale words against a radio station/ad break.
+                    allow_ma_identity = (
+                        not scoped.get("recognition_pending")
+                        and not scoped.get("recognition_no_music")
+                    )
                     
-                    is_lagging = ma_artist and ma_title and (ma_artist != scoped.get("artist") or ma_title != scoped.get("title"))
+                    is_lagging = (
+                        allow_ma_identity
+                        and ma_artist
+                        and ma_title
+                        and (ma_artist != scoped.get("artist") or ma_title != scoped.get("title"))
+                    )
 
                     for key in ("position", "duration_ms", "is_playing"):
                         value = ma_meta.get(key)
@@ -667,6 +738,8 @@ async def current_track() -> dict:
                                     scoped[key] = 0.0
                                 continue
                             scoped[key] = value
+                            if key == "is_playing":
+                                scoped["media_state_source"] = "music_assistant"
                         elif key == "position" and is_lagging:
                             # MA reports a *new* track but no position yet (it
                             # hasn't published its first state for the new
@@ -677,7 +750,7 @@ async def current_track() -> dict:
                             # MA publishes a real position next poll.
                             scoped[key] = 0.0
                     
-                    if ma_artist and ma_title:
+                    if allow_ma_identity and ma_artist and ma_title:
                         scoped["artist"] = ma_artist
                         scoped["artist_name"] = ma_meta.get("artist_name") or ma_artist
                         scoped["title"] = ma_title
@@ -696,10 +769,11 @@ async def current_track() -> dict:
                             scoped["album_art_url"] = ma_art
                             scoped["album_art"] = ma_art
                 else:
-                    # MA configured but state unknown — send null so the frontend
-                    # preserves its current animation/icon state rather than
-                    # defaulting to the hardcoded is_playing:True from the UDP engine.
+                    # MA configured but state unknown — keep transport state unknown.
+                    # Recognition can clear/identify lyrics, but must not synthesize
+                    # whether the selected media player is playing or paused.
                     scoped["is_playing"] = None
+                    scoped["media_state_source"] = "unknown"
         except Exception as exc:
             logger.debug(f"MA timeline override failed: {exc}")
         return scoped
