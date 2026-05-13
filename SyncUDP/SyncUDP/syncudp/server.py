@@ -427,18 +427,53 @@ def _player_name_from_request() -> Optional[str]:
     return name or None
 
 
+def _empty_player_track_payload(player_name: str) -> dict:
+    """Build a /current-track payload when recognition has no song yet.
+
+    Music Assistant can know that a selected player is actively playing before
+    the audio recognizer has identified music (for example during adverts or
+    station sweepers). Returning a normal payload lets the MA timeline/state
+    override below keep the UI's transport state in sync instead of short-
+    circuiting with an error until Shazam finds a track.
+    """
+    return {
+        "source": "audio_recognition",
+        "player": player_name,
+        "artist": "",
+        "title": "",
+        "album": None,
+        "album_art": None,
+        "album_art_url": None,
+        "artist_id": None,
+        "artist_name": "",
+        "track_id": None,
+        "id": None,
+        "position": 0.0,
+        "progress": 0,
+        "duration": 0,
+        "duration_ms": 0,
+        "is_playing": None,
+        "isrc": None,
+        "spotify_url": None,
+        "colors": None,
+        "recognition_provider": None,
+        "recognition_pending": True,
+    }
+
+
 def _build_player_track_payload(player_name: str) -> Optional[dict]:
     """
     Build a /current-track-compatible payload directly from a player's
     RecognitionEngine, bypassing the multi-source metadata orchestrator.
-    Returns None if the player or its song is unknown.
+    Returns None if the player manager/player is unavailable. If the player
+    exists but recognition has no song yet, returns an empty pending payload.
     """
     mgr = _get_player_manager_if_running()
-    if mgr is None:
+    if mgr is None or mgr.get_engine(player_name) is None:
         return None
     song = mgr.get_current_song(player_name)
     if not song:
-        return None
+        return _empty_player_track_payload(player_name)
     position = mgr.get_current_position(player_name) or 0.0
     duration_ms = song.get("duration_ms") or 0
     duration_sec = duration_ms / 1000.0 if duration_ms else 0
@@ -467,6 +502,7 @@ def _build_player_track_payload(player_name: str) -> Optional[dict]:
         "spotify_url": song.get("spotify_url"),
         "colors": song.get("colors"),
         "recognition_provider": song.get("recognition_provider"),
+        "recognition_pending": False,
     }
     return metadata
 
