@@ -43,6 +43,7 @@ _reconnect_delay = 1  # Start at 1 second, exponential backoff
 # Background connection management (non-blocking)
 _connection_lock: Optional[asyncio.Lock] = None  # Created lazily for event loop safety
 _connecting = False  # Fast check to avoid duplicate connection tasks
+_last_group_resolve = None  # Last logged group-resolution result (dedupe spam)
 _listener_task: Optional[asyncio.Task] = None  # Track listener to prevent duplicates
 
 # State cache (updated by WebSocket events)
@@ -441,31 +442,48 @@ def _get_target_player_id() -> Optional[str]:
 def _resolve_group_target_id(player_id: str) -> str:
     """Resolve a player to the id that actually owns its active queue.
 
-    When a player is part of a sync group (or synced to another player) it has
-    no usable queue of its own — the queue lives on the group/leader. MA exposes
-    this relationship via ``Player.active_group`` (the sync-group player) and
-    ``Player.synced_to`` (the sync leader). A follower's own queue stays idle
-    even while the group plays, so reading/controlling it makes the transport
-    icon stick on paused and makes play/pause fail with
-    "Queue <id> is not available". Following the group/leader makes both the
-    state read and the play/pause command hit the coordinator that is really
-    playing.
+    Two redirects are needed, in order:
+
+    1. **Protocol player → Universal Player.** SyncLyrics binds to the Sendspin
+       *protocol* player id (a UUID/MAC, e.g. ``a0505ec6-...``). That object has
+       no usable queue in MA (``queue_not_cached`` / ``target_state=missing``).
+       The queue-owning, groupable player is the *Universal Player* that wraps
+       it, whose id is ``"up"`` + the protocol id with separators removed
+       (``a0505ec6-... → upa0505ec6...``). Prefer the wrapper when it exists.
+
+    2. **Universal Player → sync group / leader.** A player that is part of a
+       sync group has no usable queue of its own — the active queue lives on the
+       group/leader, exposed via ``Player.active_group`` then ``synced_to``.
+
+    Skipping either step is why the transport icon stuck on paused and why
+    play/pause failed with "Queue <id> is not available".
     """
+    global _last_group_resolve
     if not _client:
         return player_id
-    player = _client.players.get(player_id)
-    if not player:
-        return player_id
-    target = (
-        getattr(player, "active_group", None)
-        or getattr(player, "synced_to", None)
-    )
-    if target and target != player_id:
-        logger.debug(
-            "MA group resolve: player %r → coordinator %r", player_id, target
+
+    # Step 1: protocol id → Universal Player wrapper.
+    resolved = player_id
+    universal_id = "up" + player_id.replace("-", "").replace(":", "").lower()
+    if _client.players.get(universal_id) is not None:
+        resolved = universal_id
+
+    # Step 2: follow the sync group / leader to the queue-owning coordinator.
+    player = _client.players.get(resolved)
+    if player is not None:
+        target = (
+            getattr(player, "active_group", None)
+            or getattr(player, "synced_to", None)
         )
-        return target
-    return player_id
+        if target and target != resolved:
+            resolved = target
+
+    if resolved != player_id:
+        msg = "MA group resolve: %r → %r" % (player_id, resolved)
+        if msg != _last_group_resolve:
+            _last_group_resolve = msg
+            logger.info(msg)
+    return resolved
 
 
 async def _get_active_queue_id(player_id: str) -> Optional[str]:
