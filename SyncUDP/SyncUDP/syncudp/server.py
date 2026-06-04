@@ -721,8 +721,14 @@ async def current_track() -> dict:
                 ma_meta = await MusicAssistantSource(target_player_id=ma_player_id).get_metadata()
                 if ma_meta:
                     # Timeline fields: always override from MA (more accurate than recognition engine)
-                    # EXCEPT for radio streams (where MA position is stream uptime, not track position)
-                    is_radio = ma_meta.get("media_type") == "radio" or not ma_meta.get("duration_ms")
+                    # EXCEPT for radio streams (where MA position is stream uptime, not track position).
+                    # Identify radio by media_type ONLY. A missing duration must
+                    # NOT count as radio: right after a track skip MA reports the
+                    # new item with elapsed=0 before its duration loads, and
+                    # treating that as radio skipped MA's position and leaked the
+                    # recognition engine's stale previous-track position into the
+                    # timecode (the post-skip jump to 1-2 minutes).
+                    is_radio = ma_meta.get("media_type") == "radio"
                     
                     # Track identity fields: override from MA so the frontend sees
                     # track changes instantly instead of waiting 10-15s for the
