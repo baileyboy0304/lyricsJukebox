@@ -1003,91 +1003,57 @@ class MusicAssistantSource(BaseMetadataSource):
     
     # === Playback Controls ===
     
-    async def toggle_playback(self) -> bool:
-        """Toggle play/pause on the active queue."""
+    async def _send_player_command(self, command: str) -> bool:
+        """Send a player-level transport command to the resolved coordinator.
+
+        Transport (play/pause/stop/skip) must target the *player* — and the
+        sync-group coordinator when synced — not the queue. Sending a queue
+        command to a group whose active source is external (e.g. Spotify
+        Connect) makes MA resume the group's own MA queue from playlog instead
+        of controlling the live source, which is what caused playback to jump
+        to a previously played MA-direct track. MA's own transport bar uses
+        these ``players/cmd/*`` commands, which route to the active source.
+        """
         if not await _ensure_connected():
             return False
-
         try:
-            queue_id = await self._resolve_queue_id()
-            if not queue_id:
+            player_id = self._resolve_player_id()
+            if not player_id:
                 logger.warning(
-                    "MA toggle_playback: no queue_id resolved for target=%r",
-                    self._target_player_id,
+                    "MA %s: no player resolved for target=%r",
+                    command, self._target_player_id,
                 )
                 return False
-
-            logger.info("MA toggle_playback: play_pause queue_id=%r", queue_id)
-            await _client.player_queues.play_pause(queue_id)
-            logger.info("MA toggle_playback: success")
+            player_id = _resolve_group_target_id(player_id)
+            logger.info("MA %s: player_id=%r", command, player_id)
+            await _client.send_command(f"players/cmd/{command}", player_id=player_id)
             return True
         except Exception as e:
-            logger.warning("MA toggle_playback exception for target=%r: %s", self._target_player_id, e)
+            logger.warning(
+                "MA %s exception for target=%r: %s",
+                command, self._target_player_id, e,
+            )
             return False
-    
+
+    async def toggle_playback(self) -> bool:
+        """Toggle play/pause on the resolved player/coordinator."""
+        return await self._send_player_command("play_pause")
+
     async def play(self) -> bool:
         """Resume playback."""
-        if not await _ensure_connected():
-            return False
-        
-        try:
-            queue_id = await self._resolve_queue_id()
-            if not queue_id:
-                return False
-            
-            await _client.player_queues.play(queue_id)
-            return True
-        except Exception as e:
-            logger.debug(f"Music Assistant play failed: {e}")
-            return False
-    
+        return await self._send_player_command("play")
+
     async def pause(self) -> bool:
         """Pause playback."""
-        if not await _ensure_connected():
-            return False
-        
-        try:
-            queue_id = await self._resolve_queue_id()
-            if not queue_id:
-                return False
-            
-            await _client.player_queues.pause(queue_id)
-            return True
-        except Exception as e:
-            logger.debug(f"Music Assistant pause failed: {e}")
-            return False
-    
+        return await self._send_player_command("pause")
+
     async def next_track(self) -> bool:
         """Skip to next track."""
-        if not await _ensure_connected():
-            return False
-        
-        try:
-            queue_id = await self._resolve_queue_id()
-            if not queue_id:
-                return False
-            
-            await _client.player_queues.next(queue_id)
-            return True
-        except Exception as e:
-            logger.debug(f"Music Assistant next_track failed: {e}")
-            return False
-    
+        return await self._send_player_command("next")
+
     async def previous_track(self) -> bool:
         """Skip to previous track."""
-        if not await _ensure_connected():
-            return False
-        
-        try:
-            queue_id = await self._resolve_queue_id()
-            if not queue_id:
-                return False
-            
-            await _client.player_queues.previous(queue_id)
-            return True
-        except Exception as e:
-            logger.debug(f"Music Assistant previous_track failed: {e}")
-            return False
+        return await self._send_player_command("previous")
     
     async def seek(self, position_ms: int) -> bool:
         """Seek to position in milliseconds."""
