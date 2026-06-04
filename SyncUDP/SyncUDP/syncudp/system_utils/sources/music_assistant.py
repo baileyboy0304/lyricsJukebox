@@ -438,13 +438,47 @@ def _get_target_player_id() -> Optional[str]:
     return None
 
 
+def _resolve_group_target_id(player_id: str) -> str:
+    """Resolve a player to the id that actually owns its active queue.
+
+    When a player is part of a sync group (or synced to another player) it has
+    no usable queue of its own — the queue lives on the group/leader. MA exposes
+    this relationship via ``Player.active_group`` (the sync-group player) and
+    ``Player.synced_to`` (the sync leader). A follower's own queue stays idle
+    even while the group plays, so reading/controlling it makes the transport
+    icon stick on paused and makes play/pause fail with
+    "Queue <id> is not available". Following the group/leader makes both the
+    state read and the play/pause command hit the coordinator that is really
+    playing.
+    """
+    if not _client:
+        return player_id
+    player = _client.players.get(player_id)
+    if not player:
+        return player_id
+    target = (
+        getattr(player, "active_group", None)
+        or getattr(player, "synced_to", None)
+    )
+    if target and target != player_id:
+        logger.debug(
+            "MA group resolve: player %r → coordinator %r", player_id, target
+        )
+        return target
+    return player_id
+
+
 async def _get_active_queue_id(player_id: str) -> Optional[str]:
-    """Get the active queue ID for a player."""
+    """Get the active queue ID for a player (following any sync group)."""
     global _current_queue_id
-    
+
     if not _client:
         return None
-    
+
+    # Follow sync-group / sync-leader so we target the queue that is actually
+    # active rather than the follower's idle own-queue.
+    player_id = _resolve_group_target_id(player_id)
+
     try:
         queue = await _client.player_queues.get_active_queue(player_id)
         if queue:
