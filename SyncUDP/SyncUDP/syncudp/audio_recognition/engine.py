@@ -1218,9 +1218,17 @@ class RecognitionEngine:
         self._lock_anchors = []
         self._consecutive_good = 0
 
-        # Freeze position at the last known value.
+        # Freeze position at the point where audio actually stopped — not at
+        # the moment we detected the gap, which can be up to
+        # UDP_AUDIO_GAP_PAUSE_S later. get_current_position() extrapolates by
+        # wall-clock, so roll it back by the silent gap so the frozen value
+        # reflects the true pause point (recognition refines it on resume).
         if self._last_result and self._frozen_position is None:
-            self._frozen_position = self._last_result.get_current_position()
+            pos = self._last_result.get_current_position()
+            if self._last_audio_time:
+                gap = max(0.0, time.time() - self._last_audio_time)
+                pos = max(0.0, pos - gap)
+            self._frozen_position = pos
             logger.debug(f"Position frozen at {self._frozen_position:.1f}s")
 
         self._set_state(EngineState.PAUSED)
