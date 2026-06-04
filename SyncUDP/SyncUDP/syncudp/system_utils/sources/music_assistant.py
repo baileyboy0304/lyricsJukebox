@@ -887,7 +887,21 @@ class MusicAssistantSource(BaseMetadataSource):
                 is_playing=is_playing,
                 reason=reason,
             )
-            
+
+            # The MA queue's current_item only reflects what is actually
+            # playing when the queue itself is the active source
+            # (queue_state == "playing"). When an external source drives the
+            # group — e.g. Spotify Connect or AirPlay — the player reports
+            # "playing" while queue.state stays "idle" and current_item is a
+            # stale leftover from the last MA-native track (observed: queue
+            # frozen on an ELO track for 8 minutes while Spotify Connect played
+            # Fleetwood Mac live). Returning that stale identity makes the UI
+            # show the wrong song and overrides the live recognition result.
+            # In that case expose transport state only and let recognition own
+            # identity / lyrics / position.
+            if queue_state != "playing":
+                return {"is_playing": is_playing, "source": "music_assistant"}
+
             # Get current item from queue
             current_item = queue.current_item
             if not current_item:
