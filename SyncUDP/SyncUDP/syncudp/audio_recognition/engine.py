@@ -56,6 +56,7 @@ class RecognitionEngine:
     DEFAULT_CAPTURE_DURATION = 5.0   # Seconds of audio to capture
     DEFAULT_STALE_THRESHOLD = 15.0   # Seconds before result is stale
     MAX_CONSECUTIVE_FAILURES = 5     # Failures before pausing
+    UDP_AUDIO_GAP_PAUSE_S = 2.0      # No fresh UDP audio for this long ⇒ paused
     ACRCLOUD_MIN_SCORE = 80          # Minimum ACRCloud score (0-100) to accept
     ACRCLOUD_HIGH_SCORE = 101        # Score at which to bypass all validation
     
@@ -117,6 +118,12 @@ class RecognitionEngine:
         
         # Position tracking for interpolation
         self._frozen_position: Optional[float] = None
+        # Wall-clock of the last cycle that received real audio. Used to detect
+        # a stopped UDP stream (pause) — when the RTP source pauses, get_audio()
+        # returns no fresh data ("BUFFERING") rather than failing, so the normal
+        # consecutive-failure pause detection never fires and position would
+        # otherwise extrapolate forward forever.
+        self._last_audio_time: float = 0.0
         
         # Spotify enrichment cache (populated by metadata_enricher)
         self._enriched_metadata: Optional[Dict[str, Any]] = None
@@ -514,13 +521,25 @@ class RecognitionEngine:
                 result = await self._do_recognition()
                 
                 if result == "BUFFERING":
-                    # Frontend buffer not ready yet - skip failure handling
-                    pass
+                    # No fresh audio this cycle. At startup this just means the
+                    # buffer is still filling, but once playback has begun a
+                    # sustained gap means the source stopped sending audio —
+                    # i.e. it was paused. Unlike a recognition failure this never
+                    # increments _consecutive_failures, so detect the gap here
+                    # and freeze the position so the timeline stops advancing.
+                    if (
+                        self._is_playing
+                        and self._last_audio_time
+                        and (time.time() - self._last_audio_time) > self.UDP_AUDIO_GAP_PAUSE_S
+                    ):
+                        self._handle_audio_gap_pause()
                 elif result:
                     # Success - enrich with Spotify (async)
+                    self._last_audio_time = time.time()
                     await self._handle_successful_recognition(result)
                 else:
-                    # Failure/no-match - check for pending timeout
+                    # Failure/no-match - audio was present but unrecognised
+                    self._last_audio_time = time.time()
                     self._handle_pending_timeout()
                 
             except asyncio.CancelledError:
@@ -1175,6 +1194,27 @@ class RecognitionEngine:
             else:
                 self._set_state(EngineState.LISTENING)
     
+    def _handle_audio_gap_pause(self):
+        """Freeze position when the UDP audio stream has stopped (paused).
+
+        A stopped RTP stream yields no fresh audio rather than a recognition
+        failure, so :meth:`_handle_failed_recognition` never runs. Mirror its
+        pause branch here: freeze the position at the last known value so the
+        on-screen timeline does not keep advancing while playback is paused.
+        Position unfreezes automatically on the next successful recognition.
+        """
+        if not self._is_playing:
+            return
+        logger.info("No UDP audio for %.1fs — treating as paused, freezing position",
+                    self.UDP_AUDIO_GAP_PAUSE_S)
+        self._is_playing = False
+        self._verified_detection = False
+        self._first_detection = False
+        if self._last_result and self._frozen_position is None:
+            self._frozen_position = self._last_result.get_current_position()
+            logger.debug(f"Position frozen at {self._frozen_position:.1f}s")
+        self._set_state(EngineState.PAUSED)
+
     def _set_state(self, new_state: EngineState):
         """
         Update state and trigger callback.
