@@ -1173,46 +1173,56 @@ class RecognitionEngine:
         if self._consecutive_failures >= self.MAX_CONSECUTIVE_FAILURES:
             # Too many failures - likely paused or no music
             if self._is_playing:
-                # Transition to paused state
                 logger.info(f"No music detected after {self._consecutive_failures} attempts, pausing")
-                self._is_playing = False
-                
-                # Reset verification for fast re-detection when music resumes
-                self._verified_detection = False
-                self._first_detection = False
-                
-                # Freeze position at last known position
-                if self._last_result:
-                    self._frozen_position = self._last_result.get_current_position()
-                    logger.debug(f"Position frozen at {self._frozen_position:.1f}s")
-                
-                self._set_state(EngineState.PAUSED)
+                self._enter_paused_state()
         else:
             # Still trying, stay in active state if we have a result
             if self._state == EngineState.ACTIVE:
                 pass  # Stay active, keep interpolating
             else:
                 self._set_state(EngineState.LISTENING)
-    
+
     def _handle_audio_gap_pause(self):
-        """Freeze position when the UDP audio stream has stopped (paused).
+        """Enter the paused state when the UDP audio stream has stopped.
 
         A stopped RTP stream yields no fresh audio rather than a recognition
-        failure, so :meth:`_handle_failed_recognition` never runs. Mirror its
-        pause branch here: freeze the position at the last known value so the
-        on-screen timeline does not keep advancing while playback is paused.
-        Position unfreezes automatically on the next successful recognition.
+        failure, so :meth:`_handle_failed_recognition` never runs. Detect the
+        gap here and enter the same paused state.
         """
         if not self._is_playing:
             return
-        logger.info("No UDP audio for %.1fs — treating as paused, freezing position",
+        logger.info("No UDP audio for %.1fs — treating as paused",
                     self.UDP_AUDIO_GAP_PAUSE_S)
+        self._enter_paused_state()
+
+    def _enter_paused_state(self):
+        """Freeze position and drop the recognition lock on pause.
+
+        Freezing stops the on-screen timeline from advancing while paused.
+        Dropping the position lock (consensus streak + verification flags) is
+        what lets the engine *re-acquire* the true position from fresh
+        recognitions when audio resumes, instead of extrapolating the stale
+        pre-pause anchor — which previously left the timeline running ahead
+        after a pause. (A track skip already drops the lock via the song-change
+        path.) Position unfreezes on the next successful recognition.
+        """
         self._is_playing = False
+
+        # Reset verification so re-detection is fast when music resumes.
         self._verified_detection = False
         self._first_detection = False
+
+        # Drop the position lock so recognition re-runs and re-locks on resume
+        # rather than ignoring new matches against the stale locked anchor.
+        self._position_lock_count = 0
+        self._lock_anchors = []
+        self._consecutive_good = 0
+
+        # Freeze position at the last known value.
         if self._last_result and self._frozen_position is None:
             self._frozen_position = self._last_result.get_current_position()
             logger.debug(f"Position frozen at {self._frozen_position:.1f}s")
+
         self._set_state(EngineState.PAUSED)
 
     def _set_state(self, new_state: EngineState):
