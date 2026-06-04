@@ -891,15 +891,42 @@ class MusicAssistantSource(BaseMetadataSource):
             # The MA queue's current_item only reflects what is actually
             # playing when the queue itself is the active source
             # (queue_state == "playing"). When an external source drives the
-            # group — e.g. Spotify Connect or AirPlay — the player reports
-            # "playing" while queue.state stays "idle" and current_item is a
-            # stale leftover from the last MA-native track (observed: queue
-            # frozen on an ELO track for 8 minutes while Spotify Connect played
-            # Fleetwood Mac live). Returning that stale identity makes the UI
-            # show the wrong song and overrides the live recognition result.
-            # In that case expose transport state only and let recognition own
-            # identity / lyrics / position.
+            # group — e.g. Spotify Connect or AirPlay — the queue stays idle and
+            # its current_item is a stale leftover from the last MA-native track
+            # (observed: queue frozen on an ELO track while Spotify Connect
+            # played something else). MA tracks the *live* external source on
+            # the player object instead — player.current_media for identity and
+            # player.corrected_elapsed_time for position — which is exactly what
+            # the MA UI media card shows. Use that so the song AND the timecode
+            # match MA precisely (and freeze correctly on pause). Only when the
+            # player exposes no live media do we hand back transport state alone
+            # and let recognition own identity/lyrics/position.
             if queue_state != "playing":
+                pm = getattr(player, "current_media", None)
+                pm_title = getattr(pm, "title", None) if pm else None
+                pm_artist = getattr(pm, "artist", None) if pm else None
+                if pm and pm_title and pm_artist:
+                    pm_pos = getattr(player, "corrected_elapsed_time", None)
+                    if pm_pos is None:
+                        pm_pos = getattr(player, "elapsed_time", None)
+                    pm_duration = getattr(pm, "duration", None)
+                    pm_media_type = getattr(pm, "media_type", None)
+                    result = {
+                        "is_playing": is_playing,
+                        "source": "music_assistant",
+                        "artist": pm_artist,
+                        "artist_name": pm_artist,
+                        "title": pm_title,
+                        "album": getattr(pm, "album", None),
+                        "position": pm_pos if pm_pos is not None else 0,
+                        "duration_ms": int(pm_duration * 1000) if pm_duration else None,
+                        "media_type": getattr(pm_media_type, "value", None)
+                        or (str(pm_media_type) if pm_media_type else "track"),
+                    }
+                    pm_art = getattr(pm, "image_url", None)
+                    if pm_art:
+                        result["album_art_url"] = pm_art
+                    return result
                 return {"is_playing": is_playing, "source": "music_assistant"}
 
             # Get current item from queue
