@@ -32,6 +32,54 @@ def _hybrid_override_should_log(scope: str, ma_artist: str, ma_title: str) -> bo
     _HYBRID_OVERRIDE_LAST_LOGGED[scope] = key
     return True
 
+
+def _get_hybrid_override_ma_source():
+    """Resolve the Music Assistant source for the hybrid identity override.
+
+    The override must read MA state for the SAME player the current request is
+    scoped to (``state.metadata_player_hint``), mirroring how ``/current-track``
+    resolves its MA player. Using the unscoped singleton here is a bug in
+    multi-instance setups: it picks whichever player auto-detect lands on, so a
+    stale player still reporting the previous track fast-forwards the lyrics
+    identity to the wrong song. The frontend then discards every lyrics fetch as
+    stale (track_id mismatch) and renders nothing.
+
+    Returns a ``MusicAssistantSource`` scoped to the hinted player when a mapping
+    exists (registry ``music_assistant_player_id`` → ``display_name``), otherwise
+    falls back to the shared singleton so single-player setups are unchanged.
+    """
+    from .sources import get_source
+
+    singleton = get_source("music_assistant")
+
+    try:
+        hint = state.metadata_player_hint.get()
+    except Exception:
+        hint = None
+    if not hint:
+        return singleton
+
+    try:
+        from audio_recognition.player_registry import get_registry
+        registry_cfg = get_registry().get(hint)
+        if registry_cfg:
+            ma_id = (registry_cfg.music_assistant_player_id or "").strip()
+            if not ma_id:
+                ma_id = (getattr(registry_cfg, "display_name", "") or "").strip()
+            if ma_id:
+                from .sources.music_assistant import MusicAssistantSource
+                scoped = MusicAssistantSource(target_player_id=ma_id)
+                # Preserve enable/availability semantics of the configured source.
+                if getattr(singleton, "enabled", False):
+                    return scoped
+    except Exception as exc:
+        import logging
+        logging.getLogger(__name__).debug(
+            f"Scoped MA source resolution failed for hint={hint!r}: {exc}"
+        )
+
+    return singleton
+
 import config
 from . import state
 from .state import ACTIVE_INTERVAL, IDLE_INTERVAL, IDLE_WAIT_TIME
@@ -261,8 +309,7 @@ async def get_current_song_meta_data() -> Optional[dict]:
                         # Check if MA knows the track before audio recognition catches up.
                         # ========================================================================
                         try:
-                            from .sources import get_source
-                            ma_source = get_source("music_assistant")
+                            ma_source = _get_hybrid_override_ma_source()
                             if ma_source and getattr(ma_source, "enabled", False) and ma_source.is_available():
                                 ma_meta = await ma_source.get_metadata()
                                 if ma_meta and ma_meta.get("is_playing"):
@@ -410,8 +457,7 @@ async def get_current_song_meta_data() -> Optional[dict]:
                         # Check if MA knows the track before audio recognition catches up.
                         # ========================================================================
                         try:
-                            from .sources import get_source
-                            ma_source = get_source("music_assistant")
+                            ma_source = _get_hybrid_override_ma_source()
                             if ma_source and getattr(ma_source, "enabled", False) and ma_source.is_available():
                                 ma_meta = await ma_source.get_metadata()
                                 if ma_meta and ma_meta.get("is_playing"):
