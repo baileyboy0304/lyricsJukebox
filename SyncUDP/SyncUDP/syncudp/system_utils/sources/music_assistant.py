@@ -797,11 +797,18 @@ class MusicAssistantSource(BaseMetadataSource):
             # which matches what the MA UI itself shows.
             is_playing = player_state == "playing" or queue_state == "playing"
 
-            # Only return false for stale-idle when neither the queue nor the
-            # resolved coordinator player says it is playing. In sync-group
-            # playback MA can leave queue.state/elapsed_time stale while the
-            # coordinator player still reports playback_state=playing; treating
-            # that as paused is the failure mode that freezes lyrics.
+            # Stale-idle means MA's cached queue state is too old to trust
+            # (e.g. an external/radio source MA is no longer actively tracking,
+            # or a session left idle for >paused_timeout). In that situation MA
+            # genuinely does NOT know whether audio is currently playing, so do
+            # not hand the frontend a hard `is_playing: false` — that freezes
+            # the transport icon on "play" and stops lyric animation even though
+            # the recognition engine is decoding live, advancing audio.
+            #
+            # Return `is_playing: None` (unknown) instead. The frontend's
+            # position-advance heuristic then decides from the live recognition
+            # position: a real radio/external stream keeps advancing → playing,
+            # while a truly paused stream stays put → paused.
             if queue_state == "idle" and is_stale and not is_playing:
                 _log_selected_player_state_change(
                     target_id=target_id,
@@ -809,10 +816,10 @@ class MusicAssistantSource(BaseMetadataSource):
                     queue_id=queue_id,
                     queue=queue,
                     coordinator_player=player,
-                    is_playing=False,
+                    is_playing=None,
                     reason="stale_idle",
                 )
-                return {"is_playing": False, "source": "music_assistant"}
+                return {"is_playing": None, "source": "music_assistant"}
 
             if is_playing:
                 reason = "playing_signal_stale_queue" if queue_state == "idle" and is_stale else "playing_signal"
