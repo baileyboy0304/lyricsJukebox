@@ -735,7 +735,19 @@ async def current_track() -> dict:
                         and (ma_artist != scoped.get("artist") or ma_title != scoped.get("title"))
                     )
 
-                    for key in ("position", "duration_ms", "is_playing"):
+                    # Transport state (play/pause) is owned EXCLUSIVELY by the
+                    # bound Music Assistant player — i.e. the speaker this window
+                    # uses for lyrics, which mirrors its sync group's state.
+                    # Nothing else (recognition, position advance, other players)
+                    # may influence the icon. We therefore report "playing" only
+                    # when this player explicitly says so, and "paused" for every
+                    # other answer (paused / idle / stopped / unknown). A null
+                    # here would let the frontend fall back to its position
+                    # heuristic, so we deliberately collapse it to False.
+                    scoped["is_playing"] = ma_meta.get("is_playing") is True
+                    scoped["media_state_source"] = "music_assistant"
+
+                    for key in ("position", "duration_ms"):
                         value = ma_meta.get(key)
                         if value is not None:
                             if key == "position" and is_radio:
@@ -743,8 +755,6 @@ async def current_track() -> dict:
                                     scoped[key] = 0.0
                                 continue
                             scoped[key] = value
-                            if key == "is_playing":
-                                scoped["media_state_source"] = "music_assistant"
                         elif key == "position" and is_lagging:
                             # MA reports a *new* track but no position yet (it
                             # hasn't published its first state for the new
@@ -774,11 +784,12 @@ async def current_track() -> dict:
                             scoped["album_art_url"] = ma_art
                             scoped["album_art"] = ma_art
                 else:
-                    # MA configured but state unknown — keep transport state unknown.
-                    # Recognition can clear/identify lyrics, but must not synthesize
-                    # whether the selected media player is playing or paused.
-                    scoped["is_playing"] = None
-                    scoped["media_state_source"] = "unknown"
+                    # MA configured but state unavailable (no answer this poll).
+                    # The bound player is the only authority for transport state,
+                    # so without an explicit "playing" we report paused rather
+                    # than letting recognition synthesize a playing state.
+                    scoped["is_playing"] = False
+                    scoped["media_state_source"] = "music_assistant"
         except Exception as exc:
             logger.debug(f"MA timeline override failed: {exc}")
         return scoped
