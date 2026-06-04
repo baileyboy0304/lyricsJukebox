@@ -720,13 +720,16 @@ async def current_track() -> dict:
                     # Only apply if MA has a valid track (artist + title both present).
                     ma_artist = ma_meta.get("artist")
                     ma_title = ma_meta.get("title")
-                    # When recognition has no music identity, keep the payload
-                    # title/artist empty so the frontend clears lyrics instead of
-                    # showing stale words against a radio station/ad break.
-                    allow_ma_identity = (
-                        not scoped.get("recognition_pending")
-                        and not scoped.get("recognition_no_music")
-                    )
+                    # MA metadata is KING: the bound player's current track is
+                    # what is actually playing, so apply it the instant MA
+                    # reports it — do NOT wait for the recognition engine to
+                    # re-identify the audio. That ~6s recognition lag is exactly
+                    # what left the track name and artwork trailing MA on every
+                    # change. Recognition is the catch-up layer (lyrics + fine
+                    # position), not the identity source. We only require MA to
+                    # actually have a track; when it doesn't, the existing
+                    # recognition identity / no-music clearing still stands.
+                    allow_ma_identity = bool(ma_artist and ma_title)
                     
                     is_lagging = (
                         allow_ma_identity
