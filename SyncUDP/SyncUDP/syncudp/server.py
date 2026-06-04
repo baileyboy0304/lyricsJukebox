@@ -51,6 +51,14 @@ _instrumental_markers_cache = {
 # Plugin sources not in this set get routed to their own playback handlers.
 LEGACY_PLAYBACK_SOURCES = {'audio_recognition'}
 
+# How recent a successful recognition must be for the engine to count as a
+# live, "playing" audio source. The recognition loop runs every few seconds and
+# flips its own is_playing flag to False after MAX_CONSECUTIVE_FAILURES of
+# silence/no-match, so a generous bound here simply guards against a wedged
+# engine reporting "playing" forever while still trusting the steady stream of
+# fresh results that arrive during real playback (incl. while position-locked).
+ENGINE_LIVE_MAX_AGE_S = 20.0
+
 TEMPLATE_DIRECTORY = str(RESOURCES_DIR / "templates")
 STATIC_DIRECTORY = str(RESOURCES_DIR)
 app = Quart(__name__, template_folder=TEMPLATE_DIRECTORY, static_folder=STATIC_DIRECTORY)
@@ -504,6 +512,21 @@ def _build_player_track_payload(player_name: str) -> Optional[dict]:
     duration_sec = duration_ms / 1000.0 if duration_ms else 0
     artist = song.get("artist", "")
     title = song.get("title", "")
+
+    # Playback state, primary signal: the recognition engine itself.
+    # The engine only reports is_playing while it is actively decoding live,
+    # advancing audio from the RTP stream and flips to paused after a run of
+    # silence/no-match. That makes it the most reliable transport signal for
+    # this app — far more so than Music Assistant's per-player cache, which is
+    # frequently stale/idle for external & radio sources (observed elapsed_age
+    # of 37h) and can even resolve to a different player than the one streaming.
+    # MA is consulted only as a fallback in /current-track when the engine has
+    # no live signal.
+    last_age = status.get("last_recognition_age")
+    engine_is_live = bool(status.get("is_playing")) and (
+        last_age is None or last_age <= ENGINE_LIVE_MAX_AGE_S
+    )
+
     metadata = {
         "source": "audio_recognition",
         "player": player_name,
@@ -522,10 +545,10 @@ def _build_player_track_payload(player_name: str) -> Optional[dict]:
         "progress": int(position * 1000),
         "duration": duration_sec,
         "duration_ms": int(duration_ms),
-        # Recognition identifies lyric content and estimates track position,
-        # but Music Assistant owns the media-player transport state.
-        "is_playing": None,
-        "media_state_source": "unknown",
+        # Recognition engine is the authoritative transport signal (see above);
+        # MA may still refine this as a fallback when the engine isn't live.
+        "is_playing": engine_is_live,
+        "media_state_source": "audio_recognition",
         "isrc": song.get("isrc"),
         "spotify_url": song.get("spotify_url"),
         "colors": song.get("colors"),
@@ -735,7 +758,32 @@ async def current_track() -> dict:
                         and (ma_artist != scoped.get("artist") or ma_title != scoped.get("title"))
                     )
 
-                    for key in ("position", "duration_ms", "is_playing"):
+                    # Playback state resolution. The engine's live signal (set
+                    # in _build_player_track_payload) is authoritative: while it
+                    # is decoding fresh, advancing audio the player IS playing,
+                    # and a stale/idle MA cache must never override that to
+                    # paused — that is the long-standing "stuck on play / lyrics
+                    # frozen" bug. MA only fills in when the engine is NOT live
+                    # (e.g. the brief gap between tracks before re-recognition):
+                    #   playing  := engine_is_live OR ma_is_playing==True
+                    # so playback is reported paused only when BOTH agree.
+                    engine_is_live = (
+                        scoped.get("media_state_source") == "audio_recognition"
+                        and scoped.get("is_playing") is True
+                    )
+                    ma_is_playing = ma_meta.get("is_playing")
+                    if engine_is_live:
+                        scoped["is_playing"] = True
+                        scoped["media_state_source"] = "audio_recognition"
+                    elif ma_is_playing is True:
+                        scoped["is_playing"] = True
+                        scoped["media_state_source"] = "music_assistant"
+                    elif ma_is_playing is False:
+                        scoped["is_playing"] = False
+                        scoped["media_state_source"] = "music_assistant"
+                    # else ma_is_playing is None (MA unknown): keep engine value.
+
+                    for key in ("position", "duration_ms"):
                         value = ma_meta.get(key)
                         if value is not None:
                             if key == "position" and is_radio:
@@ -743,8 +791,6 @@ async def current_track() -> dict:
                                     scoped[key] = 0.0
                                 continue
                             scoped[key] = value
-                            if key == "is_playing":
-                                scoped["media_state_source"] = "music_assistant"
                         elif key == "position" and is_lagging:
                             # MA reports a *new* track but no position yet (it
                             # hasn't published its first state for the new
@@ -773,12 +819,10 @@ async def current_track() -> dict:
                         if ma_art:
                             scoped["album_art_url"] = ma_art
                             scoped["album_art"] = ma_art
-                else:
-                    # MA configured but state unknown — keep transport state unknown.
-                    # Recognition can clear/identify lyrics, but must not synthesize
-                    # whether the selected media player is playing or paused.
-                    scoped["is_playing"] = None
-                    scoped["media_state_source"] = "unknown"
+                # else: MA configured but unreachable / no state. Leave the
+                # engine-derived is_playing from _build_player_track_payload in
+                # place — the live audio signal stands on its own and must not
+                # be wiped to "unknown" just because MA didn't answer.
         except Exception as exc:
             logger.debug(f"MA timeline override failed: {exc}")
         return scoped
