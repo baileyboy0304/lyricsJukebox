@@ -44,6 +44,7 @@ _reconnect_delay = 1  # Start at 1 second, exponential backoff
 _connection_lock: Optional[asyncio.Lock] = None  # Created lazily for event loop safety
 _connecting = False  # Fast check to avoid duplicate connection tasks
 _last_group_resolve = None  # Last logged group-resolution result (dedupe spam)
+_last_source_select_log = None  # Last logged (active_source, queue_id, external) tuple
 _listener_task: Optional[asyncio.Task] = None  # Track listener to prevent duplicates
 
 # State cache (updated by WebSocket events)
@@ -901,7 +902,39 @@ class MusicAssistantSource(BaseMetadataSource):
             # match MA precisely (and freeze correctly on pause). Only when the
             # player exposes no live media do we hand back transport state alone
             # and let recognition own identity/lyrics/position.
-            if queue_state != "playing":
+            # Decide whether an EXTERNAL source (Spotify Connect / AirPlay) is
+            # driving the player. If so the queue's current_item is a stale
+            # leftover and we must read identity/position from the live player
+            # object; otherwise the queue is authoritative.
+            #
+            # MA tells us directly: player.active_source is the queue/player id
+            # for MA-native queue playback, and the plugin source id for an
+            # external source (this is what MA's "External source active" label
+            # uses). That's definitive — no timing guess. Only when active_source
+            # is unset do we fall back to a staleness heuristic: the queue is
+            # treated as live while it is playing or was updated in the last 5s
+            # (covers the brief MA-native skip transient where queue_state flips
+            # to idle but already holds the new item at elapsed ~0, while the
+            # player object's elapsed still lags on the previous track).
+            active_source = getattr(player, "active_source", None)
+            if active_source:
+                external_source = active_source not in (
+                    queue_id, getattr(player, "player_id", None)
+                )
+            else:
+                external_source = (
+                    queue_state != "playing"
+                    and (time.time() - queue.elapsed_time_last_updated) >= 5.0
+                )
+            global _last_source_select_log
+            _sel = (active_source, queue_id, external_source)
+            if _sel != _last_source_select_log:
+                _last_source_select_log = _sel
+                logger.info(
+                    "MA source select: active_source=%r queue_id=%r queue_state=%s "
+                    "external=%s", active_source, queue_id, queue_state, external_source,
+                )
+            if external_source:
                 pm = getattr(player, "current_media", None)
                 pm_title = getattr(pm, "title", None) if pm else None
                 pm_artist = getattr(pm, "artist", None) if pm else None
