@@ -477,6 +477,15 @@ def _empty_player_track_payload(player_name: str) -> dict:
     }
 
 
+# Per-player position continuity state. When MA is the authority but a poll
+# briefly produces no MA state (e.g. during a track skip), the payload falls
+# back to the recognition engine's position — which can still be locked on the
+# previous track and jump the on-screen timeline. We cache the last MA-sourced
+# position and, across such gaps, advance it at real time instead of letting the
+# stale recognition position through.
+_TRACK_SINCE: Dict[str, tuple] = {}  # player_scope -> (title, monotonic_ts track became current)
+
+
 def _build_player_track_payload(player_name: str) -> Optional[dict]:
     """
     Build a /current-track-compatible payload directly from a player's
@@ -711,8 +720,14 @@ async def current_track() -> dict:
                 ma_meta = await MusicAssistantSource(target_player_id=ma_player_id).get_metadata()
                 if ma_meta:
                     # Timeline fields: always override from MA (more accurate than recognition engine)
-                    # EXCEPT for radio streams (where MA position is stream uptime, not track position)
-                    is_radio = ma_meta.get("media_type") == "radio" or not ma_meta.get("duration_ms")
+                    # EXCEPT for radio streams (where MA position is stream uptime, not track position).
+                    # Identify radio by media_type ONLY. A missing duration must
+                    # NOT count as radio: right after a track skip MA reports the
+                    # new item with elapsed=0 before its duration loads, and
+                    # treating that as radio skipped MA's position and leaked the
+                    # recognition engine's stale previous-track position into the
+                    # timecode (the post-skip jump to 1-2 minutes).
+                    is_radio = ma_meta.get("media_type") == "radio"
                     
                     # Track identity fields: override from MA so the frontend sees
                     # track changes instantly instead of waiting 10-15s for the
@@ -720,13 +735,16 @@ async def current_track() -> dict:
                     # Only apply if MA has a valid track (artist + title both present).
                     ma_artist = ma_meta.get("artist")
                     ma_title = ma_meta.get("title")
-                    # When recognition has no music identity, keep the payload
-                    # title/artist empty so the frontend clears lyrics instead of
-                    # showing stale words against a radio station/ad break.
-                    allow_ma_identity = (
-                        not scoped.get("recognition_pending")
-                        and not scoped.get("recognition_no_music")
-                    )
+                    # MA metadata is KING: the bound player's current track is
+                    # what is actually playing, so apply it the instant MA
+                    # reports it — do NOT wait for the recognition engine to
+                    # re-identify the audio. That ~6s recognition lag is exactly
+                    # what left the track name and artwork trailing MA on every
+                    # change. Recognition is the catch-up layer (lyrics + fine
+                    # position), not the identity source. We only require MA to
+                    # actually have a track; when it doesn't, the existing
+                    # recognition identity / no-music clearing still stands.
+                    allow_ma_identity = bool(ma_artist and ma_title)
                     
                     is_lagging = (
                         allow_ma_identity
@@ -735,7 +753,19 @@ async def current_track() -> dict:
                         and (ma_artist != scoped.get("artist") or ma_title != scoped.get("title"))
                     )
 
-                    for key in ("position", "duration_ms", "is_playing"):
+                    # Transport state (play/pause) is owned EXCLUSIVELY by the
+                    # bound Music Assistant player — i.e. the speaker this window
+                    # uses for lyrics, which mirrors its sync group's state.
+                    # Nothing else (recognition, position advance, other players)
+                    # may influence the icon. We therefore report "playing" only
+                    # when this player explicitly says so, and "paused" for every
+                    # other answer (paused / idle / stopped / unknown). A null
+                    # here would let the frontend fall back to its position
+                    # heuristic, so we deliberately collapse it to False.
+                    scoped["is_playing"] = ma_meta.get("is_playing") is True
+                    scoped["media_state_source"] = "music_assistant"
+
+                    for key in ("position", "duration_ms"):
                         value = ma_meta.get(key)
                         if value is not None:
                             if key == "position" and is_radio:
@@ -743,8 +773,6 @@ async def current_track() -> dict:
                                     scoped[key] = 0.0
                                 continue
                             scoped[key] = value
-                            if key == "is_playing":
-                                scoped["media_state_source"] = "music_assistant"
                         elif key == "position" and is_lagging:
                             # MA reports a *new* track but no position yet (it
                             # hasn't published its first state for the new
@@ -774,13 +802,49 @@ async def current_track() -> dict:
                             scoped["album_art_url"] = ma_art
                             scoped["album_art"] = ma_art
                 else:
-                    # MA configured but state unknown — keep transport state unknown.
-                    # Recognition can clear/identify lyrics, but must not synthesize
-                    # whether the selected media player is playing or paused.
-                    scoped["is_playing"] = None
-                    scoped["media_state_source"] = "unknown"
+                    # MA configured but state unavailable (no answer this poll).
+                    # The bound player is the only authority for transport state,
+                    # so without an explicit "playing" we report paused rather
+                    # than letting recognition synthesize a playing state.
+                    scoped["is_playing"] = False
+                    scoped["media_state_source"] = "music_assistant"
         except Exception as exc:
             logger.debug(f"MA timeline override failed: {exc}")
+
+        # Physical position bound (source-agnostic safety net). MA's player and
+        # queue objects can momentarily return a wildly stale position right
+        # after a track skip — observed 3728s (62 min) for a 3-minute song, or
+        # the previous track's position. A track that became the current track
+        # T seconds ago cannot be more than ~T seconds in, because a skipped
+        # track starts at 0. So for the first seconds after a track change,
+        # clamp the position to how long this track has actually been current,
+        # plus a small margin (recognition latency / initial offset). Once the
+        # track has been current for a while we stop clamping so manual seeks
+        # are not affected.
+        try:
+            import time as _t
+            _now = _t.monotonic()
+            _pos = scoped.get("position")
+            _title = scoped.get("title")
+            _prev = _TRACK_SINCE.get(player_scope)
+            if _prev is None or _prev[0] != _title:
+                _TRACK_SINCE[player_scope] = (_title, _now)
+                _since = 0.0
+            else:
+                _since = _now - _prev[1]
+            if isinstance(_pos, (int, float)) and _since < 20.0:
+                _max_plausible = _since + 10.0
+                if _pos > _max_plausible:
+                    logger.info(
+                        "POS-CLAMP player=%s %.1f->%.1f (track current %.1fs) "
+                        "title=%r src=%s",
+                        player_scope, _pos, max(0.0, _since), _since, _title,
+                        scoped.get("media_state_source"),
+                    )
+                    scoped["position"] = max(0.0, _since)
+        except Exception:
+            pass
+
         return scoped
 
     try:

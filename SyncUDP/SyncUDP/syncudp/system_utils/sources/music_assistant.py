@@ -43,6 +43,8 @@ _reconnect_delay = 1  # Start at 1 second, exponential backoff
 # Background connection management (non-blocking)
 _connection_lock: Optional[asyncio.Lock] = None  # Created lazily for event loop safety
 _connecting = False  # Fast check to avoid duplicate connection tasks
+_last_group_resolve = None  # Last logged group-resolution result (dedupe spam)
+_last_source_select_log = None  # Last logged (active_source, queue_id, external) tuple
 _listener_task: Optional[asyncio.Task] = None  # Track listener to prevent duplicates
 
 # State cache (updated by WebSocket events)
@@ -438,13 +440,64 @@ def _get_target_player_id() -> Optional[str]:
     return None
 
 
+def _resolve_group_target_id(player_id: str) -> str:
+    """Resolve a player to the id that actually owns its active queue.
+
+    Two redirects are needed, in order:
+
+    1. **Protocol player → Universal Player.** SyncLyrics binds to the Sendspin
+       *protocol* player id (a UUID/MAC, e.g. ``a0505ec6-...``). That object has
+       no usable queue in MA (``queue_not_cached`` / ``target_state=missing``).
+       The queue-owning, groupable player is the *Universal Player* that wraps
+       it, whose id is ``"up"`` + the protocol id with separators removed
+       (``a0505ec6-... → upa0505ec6...``). Prefer the wrapper when it exists.
+
+    2. **Universal Player → sync group / leader.** A player that is part of a
+       sync group has no usable queue of its own — the active queue lives on the
+       group/leader, exposed via ``Player.active_group`` then ``synced_to``.
+
+    Skipping either step is why the transport icon stuck on paused and why
+    play/pause failed with "Queue <id> is not available".
+    """
+    global _last_group_resolve
+    if not _client:
+        return player_id
+
+    # Step 1: protocol id → Universal Player wrapper.
+    resolved = player_id
+    universal_id = "up" + player_id.replace("-", "").replace(":", "").lower()
+    if _client.players.get(universal_id) is not None:
+        resolved = universal_id
+
+    # Step 2: follow the sync group / leader to the queue-owning coordinator.
+    player = _client.players.get(resolved)
+    if player is not None:
+        target = (
+            getattr(player, "active_group", None)
+            or getattr(player, "synced_to", None)
+        )
+        if target and target != resolved:
+            resolved = target
+
+    if resolved != player_id:
+        msg = "MA group resolve: %r → %r" % (player_id, resolved)
+        if msg != _last_group_resolve:
+            _last_group_resolve = msg
+            logger.info(msg)
+    return resolved
+
+
 async def _get_active_queue_id(player_id: str) -> Optional[str]:
-    """Get the active queue ID for a player."""
+    """Get the active queue ID for a player (following any sync group)."""
     global _current_queue_id
-    
+
     if not _client:
         return None
-    
+
+    # Follow sync-group / sync-leader so we target the queue that is actually
+    # active rather than the follower's idle own-queue.
+    player_id = _resolve_group_target_id(player_id)
+
     try:
         queue = await _client.player_queues.get_active_queue(player_id)
         if queue:
@@ -835,7 +888,85 @@ class MusicAssistantSource(BaseMetadataSource):
                 is_playing=is_playing,
                 reason=reason,
             )
-            
+
+            # The MA queue's current_item only reflects what is actually
+            # playing when the queue itself is the active source
+            # (queue_state == "playing"). When an external source drives the
+            # group — e.g. Spotify Connect or AirPlay — the queue stays idle and
+            # its current_item is a stale leftover from the last MA-native track
+            # (observed: queue frozen on an ELO track while Spotify Connect
+            # played something else). MA tracks the *live* external source on
+            # the player object instead — player.current_media for identity and
+            # player.corrected_elapsed_time for position — which is exactly what
+            # the MA UI media card shows. Use that so the song AND the timecode
+            # match MA precisely (and freeze correctly on pause). Only when the
+            # player exposes no live media do we hand back transport state alone
+            # and let recognition own identity/lyrics/position.
+            # Decide whether an EXTERNAL source (Spotify Connect / AirPlay) is
+            # driving the player. If so the queue's current_item is a stale
+            # leftover and we must read identity/position from the live player
+            # object; otherwise the queue is authoritative.
+            #
+            # MA tells us directly: player.active_source is the queue/player id
+            # for MA-native queue playback, and the plugin source id for an
+            # external source (this is what MA's "External source active" label
+            # uses). That's definitive — no timing guess. Only when active_source
+            # is unset do we fall back to a staleness heuristic: the queue is
+            # treated as live while it is playing or was updated in the last 5s
+            # (covers the brief MA-native skip transient where queue_state flips
+            # to idle but already holds the new item at elapsed ~0, while the
+            # player object's elapsed still lags on the previous track).
+            active_source = getattr(player, "active_source", None)
+            if active_source:
+                external_source = active_source not in (
+                    queue_id, getattr(player, "player_id", None)
+                )
+            else:
+                external_source = (
+                    queue_state != "playing"
+                    and (time.time() - queue.elapsed_time_last_updated) >= 5.0
+                )
+            global _last_source_select_log
+            _cur_item_name = getattr(
+                getattr(queue, "current_item", None), "name", None
+            )
+            _sel = (active_source, queue_id, external_source, _cur_item_name)
+            if _sel != _last_source_select_log:
+                _last_source_select_log = _sel
+                logger.info(
+                    "MA source select: active_source=%r queue_id=%r player_id=%r "
+                    "queue_state=%s external=%s item=%r",
+                    active_source, queue_id, getattr(player, "player_id", None),
+                    queue_state, external_source, _cur_item_name,
+                )
+            if external_source:
+                pm = getattr(player, "current_media", None)
+                pm_title = getattr(pm, "title", None) if pm else None
+                pm_artist = getattr(pm, "artist", None) if pm else None
+                if pm and pm_title and pm_artist:
+                    pm_pos = getattr(player, "corrected_elapsed_time", None)
+                    if pm_pos is None:
+                        pm_pos = getattr(player, "elapsed_time", None)
+                    pm_duration = getattr(pm, "duration", None)
+                    pm_media_type = getattr(pm, "media_type", None)
+                    result = {
+                        "is_playing": is_playing,
+                        "source": "music_assistant",
+                        "artist": pm_artist,
+                        "artist_name": pm_artist,
+                        "title": pm_title,
+                        "album": getattr(pm, "album", None),
+                        "position": pm_pos if pm_pos is not None else 0,
+                        "duration_ms": int(pm_duration * 1000) if pm_duration else None,
+                        "media_type": getattr(pm_media_type, "value", None)
+                        or (str(pm_media_type) if pm_media_type else "track"),
+                    }
+                    pm_art = getattr(pm, "image_url", None)
+                    if pm_art:
+                        result["album_art_url"] = pm_art
+                    return result
+                return {"is_playing": is_playing, "source": "music_assistant"}
+
             # Get current item from queue
             current_item = queue.current_item
             if not current_item:
@@ -951,91 +1082,57 @@ class MusicAssistantSource(BaseMetadataSource):
     
     # === Playback Controls ===
     
-    async def toggle_playback(self) -> bool:
-        """Toggle play/pause on the active queue."""
+    async def _send_player_command(self, command: str) -> bool:
+        """Send a player-level transport command to the resolved coordinator.
+
+        Transport (play/pause/stop/skip) must target the *player* — and the
+        sync-group coordinator when synced — not the queue. Sending a queue
+        command to a group whose active source is external (e.g. Spotify
+        Connect) makes MA resume the group's own MA queue from playlog instead
+        of controlling the live source, which is what caused playback to jump
+        to a previously played MA-direct track. MA's own transport bar uses
+        these ``players/cmd/*`` commands, which route to the active source.
+        """
         if not await _ensure_connected():
             return False
-
         try:
-            queue_id = await self._resolve_queue_id()
-            if not queue_id:
+            player_id = self._resolve_player_id()
+            if not player_id:
                 logger.warning(
-                    "MA toggle_playback: no queue_id resolved for target=%r",
-                    self._target_player_id,
+                    "MA %s: no player resolved for target=%r",
+                    command, self._target_player_id,
                 )
                 return False
-
-            logger.info("MA toggle_playback: play_pause queue_id=%r", queue_id)
-            await _client.player_queues.play_pause(queue_id)
-            logger.info("MA toggle_playback: success")
+            player_id = _resolve_group_target_id(player_id)
+            logger.info("MA %s: player_id=%r", command, player_id)
+            await _client.send_command(f"players/cmd/{command}", player_id=player_id)
             return True
         except Exception as e:
-            logger.warning("MA toggle_playback exception for target=%r: %s", self._target_player_id, e)
+            logger.warning(
+                "MA %s exception for target=%r: %s",
+                command, self._target_player_id, e,
+            )
             return False
-    
+
+    async def toggle_playback(self) -> bool:
+        """Toggle play/pause on the resolved player/coordinator."""
+        return await self._send_player_command("play_pause")
+
     async def play(self) -> bool:
         """Resume playback."""
-        if not await _ensure_connected():
-            return False
-        
-        try:
-            queue_id = await self._resolve_queue_id()
-            if not queue_id:
-                return False
-            
-            await _client.player_queues.play(queue_id)
-            return True
-        except Exception as e:
-            logger.debug(f"Music Assistant play failed: {e}")
-            return False
-    
+        return await self._send_player_command("play")
+
     async def pause(self) -> bool:
         """Pause playback."""
-        if not await _ensure_connected():
-            return False
-        
-        try:
-            queue_id = await self._resolve_queue_id()
-            if not queue_id:
-                return False
-            
-            await _client.player_queues.pause(queue_id)
-            return True
-        except Exception as e:
-            logger.debug(f"Music Assistant pause failed: {e}")
-            return False
-    
+        return await self._send_player_command("pause")
+
     async def next_track(self) -> bool:
         """Skip to next track."""
-        if not await _ensure_connected():
-            return False
-        
-        try:
-            queue_id = await self._resolve_queue_id()
-            if not queue_id:
-                return False
-            
-            await _client.player_queues.next(queue_id)
-            return True
-        except Exception as e:
-            logger.debug(f"Music Assistant next_track failed: {e}")
-            return False
-    
+        return await self._send_player_command("next")
+
     async def previous_track(self) -> bool:
         """Skip to previous track."""
-        if not await _ensure_connected():
-            return False
-        
-        try:
-            queue_id = await self._resolve_queue_id()
-            if not queue_id:
-                return False
-            
-            await _client.player_queues.previous(queue_id)
-            return True
-        except Exception as e:
-            logger.debug(f"Music Assistant previous_track failed: {e}")
-            return False
+        return await self._send_player_command("previous")
     
     async def seek(self, position_ms: int) -> bool:
         """Seek to position in milliseconds."""

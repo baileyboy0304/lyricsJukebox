@@ -56,6 +56,7 @@ class RecognitionEngine:
     DEFAULT_CAPTURE_DURATION = 5.0   # Seconds of audio to capture
     DEFAULT_STALE_THRESHOLD = 15.0   # Seconds before result is stale
     MAX_CONSECUTIVE_FAILURES = 5     # Failures before pausing
+    UDP_AUDIO_GAP_PAUSE_S = 2.0      # No fresh UDP audio for this long ⇒ paused
     ACRCLOUD_MIN_SCORE = 80          # Minimum ACRCloud score (0-100) to accept
     ACRCLOUD_HIGH_SCORE = 101        # Score at which to bypass all validation
     
@@ -117,6 +118,12 @@ class RecognitionEngine:
         
         # Position tracking for interpolation
         self._frozen_position: Optional[float] = None
+        # Wall-clock of the last cycle that received real audio. Used to detect
+        # a stopped UDP stream (pause) — when the RTP source pauses, get_audio()
+        # returns no fresh data ("BUFFERING") rather than failing, so the normal
+        # consecutive-failure pause detection never fires and position would
+        # otherwise extrapolate forward forever.
+        self._last_audio_time: float = 0.0
         
         # Spotify enrichment cache (populated by metadata_enricher)
         self._enriched_metadata: Optional[Dict[str, Any]] = None
@@ -514,13 +521,25 @@ class RecognitionEngine:
                 result = await self._do_recognition()
                 
                 if result == "BUFFERING":
-                    # Frontend buffer not ready yet - skip failure handling
-                    pass
+                    # No fresh audio this cycle. At startup this just means the
+                    # buffer is still filling, but once playback has begun a
+                    # sustained gap means the source stopped sending audio —
+                    # i.e. it was paused. Unlike a recognition failure this never
+                    # increments _consecutive_failures, so detect the gap here
+                    # and freeze the position so the timeline stops advancing.
+                    if (
+                        self._is_playing
+                        and self._last_audio_time
+                        and (time.time() - self._last_audio_time) > self.UDP_AUDIO_GAP_PAUSE_S
+                    ):
+                        self._handle_audio_gap_pause()
                 elif result:
                     # Success - enrich with Spotify (async)
+                    self._last_audio_time = time.time()
                     await self._handle_successful_recognition(result)
                 else:
-                    # Failure/no-match - check for pending timeout
+                    # Failure/no-match - audio was present but unrecognised
+                    self._last_audio_time = time.time()
                     self._handle_pending_timeout()
                 
             except asyncio.CancelledError:
@@ -1154,27 +1173,66 @@ class RecognitionEngine:
         if self._consecutive_failures >= self.MAX_CONSECUTIVE_FAILURES:
             # Too many failures - likely paused or no music
             if self._is_playing:
-                # Transition to paused state
                 logger.info(f"No music detected after {self._consecutive_failures} attempts, pausing")
-                self._is_playing = False
-                
-                # Reset verification for fast re-detection when music resumes
-                self._verified_detection = False
-                self._first_detection = False
-                
-                # Freeze position at last known position
-                if self._last_result:
-                    self._frozen_position = self._last_result.get_current_position()
-                    logger.debug(f"Position frozen at {self._frozen_position:.1f}s")
-                
-                self._set_state(EngineState.PAUSED)
+                self._enter_paused_state()
         else:
             # Still trying, stay in active state if we have a result
             if self._state == EngineState.ACTIVE:
                 pass  # Stay active, keep interpolating
             else:
                 self._set_state(EngineState.LISTENING)
-    
+
+    def _handle_audio_gap_pause(self):
+        """Enter the paused state when the UDP audio stream has stopped.
+
+        A stopped RTP stream yields no fresh audio rather than a recognition
+        failure, so :meth:`_handle_failed_recognition` never runs. Detect the
+        gap here and enter the same paused state.
+        """
+        if not self._is_playing:
+            return
+        logger.info("No UDP audio for %.1fs — treating as paused",
+                    self.UDP_AUDIO_GAP_PAUSE_S)
+        self._enter_paused_state()
+
+    def _enter_paused_state(self):
+        """Freeze position and drop the recognition lock on pause.
+
+        Freezing stops the on-screen timeline from advancing while paused.
+        Dropping the position lock (consensus streak + verification flags) is
+        what lets the engine *re-acquire* the true position from fresh
+        recognitions when audio resumes, instead of extrapolating the stale
+        pre-pause anchor — which previously left the timeline running ahead
+        after a pause. (A track skip already drops the lock via the song-change
+        path.) Position unfreezes on the next successful recognition.
+        """
+        self._is_playing = False
+
+        # Reset verification so re-detection is fast when music resumes.
+        self._verified_detection = False
+        self._first_detection = False
+
+        # Drop the position lock so recognition re-runs and re-locks on resume
+        # rather than ignoring new matches against the stale locked anchor.
+        self._position_lock_count = 0
+        self._lock_anchors = []
+        self._consecutive_good = 0
+
+        # Freeze position at the point where audio actually stopped — not at
+        # the moment we detected the gap, which can be up to
+        # UDP_AUDIO_GAP_PAUSE_S later. get_current_position() extrapolates by
+        # wall-clock, so roll it back by the silent gap so the frozen value
+        # reflects the true pause point (recognition refines it on resume).
+        if self._last_result and self._frozen_position is None:
+            pos = self._last_result.get_current_position()
+            if self._last_audio_time:
+                gap = max(0.0, time.time() - self._last_audio_time)
+                pos = max(0.0, pos - gap)
+            self._frozen_position = pos
+            logger.debug(f"Position frozen at {self._frozen_position:.1f}s")
+
+        self._set_state(EngineState.PAUSED)
+
     def _set_state(self, new_state: EngineState):
         """
         Update state and trigger callback.
