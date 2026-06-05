@@ -483,8 +483,7 @@ def _empty_player_track_payload(player_name: str) -> dict:
 # previous track and jump the on-screen timeline. We cache the last MA-sourced
 # position and, across such gaps, advance it at real time instead of letting the
 # stale recognition position through.
-_LAST_MA_POS: Dict[str, tuple] = {}   # player_scope -> (position_sec, monotonic_ts)
-_LAST_POS_SEEN: Dict[str, tuple] = {}  # player_scope -> (position_sec, wall_ts, title)
+_TRACK_SINCE: Dict[str, tuple] = {}  # player_scope -> (title, monotonic_ts track became current)
 
 
 def _build_player_track_payload(player_name: str) -> Optional[dict]:
@@ -812,54 +811,37 @@ async def current_track() -> dict:
         except Exception as exc:
             logger.debug(f"MA timeline override failed: {exc}")
 
-        # Position continuity guard (MA is king). The MA override above tags a
-        # MA-sourced position with media_state_source == "music_assistant". On a
-        # track skip there can be a poll or two where MA state is momentarily
-        # unavailable and the position falls back to the recognition engine,
-        # which may still be locked on the previous track — jumping the timecode
-        # (e.g. 0 → 15s). While MA is configured, bridge those gaps by advancing
-        # the last MA-sourced position at real time rather than showing the
-        # leaked recognition value. Recognition refines once it re-locks.
+        # Physical position bound (source-agnostic safety net). MA's player and
+        # queue objects can momentarily return a wildly stale position right
+        # after a track skip — observed 3728s (62 min) for a 3-minute song, or
+        # the previous track's position. A track that became the current track
+        # T seconds ago cannot be more than ~T seconds in, because a skipped
+        # track starts at 0. So for the first seconds after a track change,
+        # clamp the position to how long this track has actually been current,
+        # plus a small margin (recognition latency / initial offset). Once the
+        # track has been current for a while we stop clamping so manual seeks
+        # are not affected.
         try:
-            import time as _time
-            from system_utils.sources.music_assistant import is_configured as _ma_cfg
+            import time as _t
+            _now = _t.monotonic()
             _pos = scoped.get("position")
-            _src = scoped.get("media_state_source")
-            _playing = scoped.get("is_playing") is True
-            if _src == "music_assistant" and isinstance(_pos, (int, float)):
-                _LAST_MA_POS[player_scope] = (_pos, _time.monotonic())
-            elif _ma_cfg() and isinstance(_pos, (int, float)):
-                _cached = _LAST_MA_POS.get(player_scope)
-                if _cached is not None:
-                    _cpos, _cts = _cached
-                    _expected = _cpos + (_time.monotonic() - _cts if _playing else 0.0)
-                    if abs(_pos - _expected) > 3.0:
-                        logger.info(
-                            "POS-GUARD player=%s holding MA-based %.1fs instead of "
-                            "recognition %.1fs (title=%r)",
-                            player_scope, _expected, _pos, scoped.get("title"),
-                        )
-                        scoped["position"] = max(0.0, _expected)
-        except Exception:
-            pass
-
-        # Diagnostic: log an abrupt forward jump in the on-screen position (same
-        # track, faster than real time) with its source, to pinpoint any glitch.
-        try:
-            import time as _time2
-            _p = scoped.get("position")
-            if isinstance(_p, (int, float)):
-                _prev = _LAST_POS_SEEN.get(player_scope)
-                _LAST_POS_SEEN[player_scope] = (_p, _time2.time(), scoped.get("title"))
-                if _prev is not None:
-                    _pp, _pt, _ptitle = _prev
-                    _dt = _time2.time() - _pt
-                    if _ptitle == scoped.get("title") and (_p - _pp) - _dt > 3.0:
-                        logger.info(
-                            "POS-JUMP player=%s %.1f->%.1f over %.1fs title=%r src=%s",
-                            player_scope, _pp, _p, _dt, scoped.get("title"),
-                            scoped.get("media_state_source"),
-                        )
+            _title = scoped.get("title")
+            _prev = _TRACK_SINCE.get(player_scope)
+            if _prev is None or _prev[0] != _title:
+                _TRACK_SINCE[player_scope] = (_title, _now)
+                _since = 0.0
+            else:
+                _since = _now - _prev[1]
+            if isinstance(_pos, (int, float)) and _since < 20.0:
+                _max_plausible = _since + 10.0
+                if _pos > _max_plausible:
+                    logger.info(
+                        "POS-CLAMP player=%s %.1f->%.1f (track current %.1fs) "
+                        "title=%r src=%s",
+                        player_scope, _pos, max(0.0, _since), _since, _title,
+                        scoped.get("media_state_source"),
+                    )
+                    scoped["position"] = max(0.0, _since)
         except Exception:
             pass
 
