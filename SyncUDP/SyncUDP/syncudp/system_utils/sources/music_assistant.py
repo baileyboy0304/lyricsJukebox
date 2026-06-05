@@ -901,7 +901,19 @@ class MusicAssistantSource(BaseMetadataSource):
             # match MA precisely (and freeze correctly on pause). Only when the
             # player exposes no live media do we hand back transport state alone
             # and let recognition own identity/lyrics/position.
-            if queue_state != "playing":
+            # Use the live player object (external source like Spotify Connect)
+            # only when the queue is genuinely NOT the source of truth: not
+            # playing AND its elapsed timestamp is stale. During an MA-native
+            # track skip the queue briefly reports a non-playing state but
+            # already holds the NEW item with a fresh elapsed of ~0, while the
+            # player object's elapsed still lags on the PREVIOUS track for a
+            # moment — preferring the player there is what jumped the post-skip
+            # timecode to ~the old position. So while the queue was updated
+            # recently, keep using it (position starts at 0 and counts up).
+            queue_recently_updated = (
+                time.time() - queue.elapsed_time_last_updated
+            ) < 5.0
+            if queue_state != "playing" and not queue_recently_updated:
                 pm = getattr(player, "current_media", None)
                 pm_title = getattr(pm, "title", None) if pm else None
                 pm_artist = getattr(pm, "artist", None) if pm else None
