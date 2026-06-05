@@ -484,6 +484,10 @@ def _empty_player_track_payload(player_name: str) -> dict:
 # position and, across such gaps, advance it at real time instead of letting the
 # stale recognition position through.
 _TRACK_SINCE: Dict[str, tuple] = {}  # player_scope -> (title, monotonic_ts track became current)
+# How long after a track change the recognition engine needs to lock onto the
+# new track. Within this window the engine may still report the previous track,
+# so the timeline is driven by wall-clock-since-change; after it, by the engine.
+RECOGNITION_LAG_S = 12.0
 
 
 def _build_player_track_payload(player_name: str) -> Optional[dict]:
@@ -713,6 +717,18 @@ async def current_track() -> dict:
         # (auto-detect mode).  This populates _current_queue_id and
         # _current_player_id in the MA module so that subsequent transport
         # control commands can resolve the queue without an explicit link.
+        #
+        # Snapshot the recognition engine's own position BEFORE the MA override
+        # touches it. The engine's interpolated, Shazam-locked position is the
+        # accurate timeline source (sub-second in practice); MA's queue/player
+        # elapsed is the unreliable number — it routinely returns a stale
+        # multi-minute value after a skip. Position is resolved from these two
+        # below, after the identity override.
+        _rec_position = scoped.get("position")
+        _ma_position = None
+        _ma_is_radio = False
+        _ma_is_lagging = False
+        _ma_identity_applied = False
         try:
             ma_player_id = await _resolve_ma_player_id_for_request()
             from system_utils.sources.music_assistant import MusicAssistantSource, is_configured
@@ -765,25 +781,19 @@ async def current_track() -> dict:
                     scoped["is_playing"] = ma_meta.get("is_playing") is True
                     scoped["media_state_source"] = "music_assistant"
 
-                    for key in ("position", "duration_ms"):
-                        value = ma_meta.get(key)
-                        if value is not None:
-                            if key == "position" and is_radio:
-                                if is_lagging:
-                                    scoped[key] = 0.0
-                                continue
-                            scoped[key] = value
-                        elif key == "position" and is_lagging:
-                            # MA reports a *new* track but no position yet (it
-                            # hasn't published its first state for the new
-                            # item). The recognition engine's position is
-                            # still elapsed time on the previous track —
-                            # leaking it here makes the UI show e.g. 1:48
-                            # while MA actually shows 0:30. Reset to 0 until
-                            # MA publishes a real position next poll.
-                            scoped[key] = 0.0
-                    
+                    # Duration always comes from MA (reliable). Position is
+                    # resolved AFTER the identity override (see below) — the
+                    # recognition engine, not MA's elapsed, is the position
+                    # authority once it has locked onto the track. Stash MA's
+                    # position only as a fallback for when recognition has none.
+                    if ma_meta.get("duration_ms") is not None:
+                        scoped["duration_ms"] = ma_meta.get("duration_ms")
+                    _ma_position = ma_meta.get("position")
+                    _ma_is_radio = is_radio
+                    _ma_is_lagging = is_lagging
+
                     if allow_ma_identity and ma_artist and ma_title:
+                        _ma_identity_applied = True
                         scoped["artist"] = ma_artist
                         scoped["artist_name"] = ma_meta.get("artist_name") or ma_artist
                         scoped["title"] = ma_title
@@ -811,20 +821,24 @@ async def current_track() -> dict:
         except Exception as exc:
             logger.debug(f"MA timeline override failed: {exc}")
 
-        # Physical position bound (source-agnostic safety net). MA's player and
-        # queue objects can momentarily return a wildly stale position right
-        # after a track skip — observed 3728s (62 min) for a 3-minute song, or
-        # the previous track's position. A track that became the current track
-        # T seconds ago cannot be more than ~T seconds in, because a skipped
-        # track starts at 0. So for the first seconds after a track change,
-        # clamp the position to how long this track has actually been current,
-        # plus a small margin (recognition latency / initial offset). Once the
-        # track has been current for a while we stop clamping so manual seeks
-        # are not affected.
+        # Position authority: the recognition engine, not MA's elapsed.
+        #
+        # MA's queue/player elapsed is unreliable here — after a skip it returns
+        # a stale multi-minute value (observed 1007s for a track 2s in) and the
+        # old "clamp to wall-clock" band-aid only masked the first 20s before the
+        # garbage leaked through (the 17:34 timecode). The engine, by contrast,
+        # locks every track to sub-second accuracy. So drive the timeline from
+        # the engine and use MA only when recognition has nothing.
+        #
+        # The one window the engine can't cover is the ~6s recognition lag right
+        # after a track change, where it may still report the *previous* track.
+        # We bridge that with wall-clock-since-track-change: how long this track
+        # has actually been on screen (a skipped track starts at 0). `_since`
+        # resets whenever the displayed (MA) title changes, so it tracks the new
+        # track's true elapsed until the engine catches up.
         try:
             import time as _t
             _now = _t.monotonic()
-            _pos = scoped.get("position")
             _title = scoped.get("title")
             _prev = _TRACK_SINCE.get(player_scope)
             if _prev is None or _prev[0] != _title:
@@ -832,16 +846,31 @@ async def current_track() -> dict:
                 _since = 0.0
             else:
                 _since = _now - _prev[1]
-            if isinstance(_pos, (int, float)) and _since < 20.0:
-                _max_plausible = _since + 10.0
-                if _pos > _max_plausible:
-                    logger.info(
-                        "POS-CLAMP player=%s %.1f->%.1f (track current %.1fs) "
-                        "title=%r src=%s",
-                        player_scope, _pos, max(0.0, _since), _since, _title,
-                        scoped.get("media_state_source"),
-                    )
-                    scoped["position"] = max(0.0, _since)
+
+            if _ma_is_radio:
+                # Radio: the engine's live recognized position is already what
+                # we want (MA reports stream uptime, not track position) — leave
+                # it in place, only zeroing on a lagging track change.
+                if _ma_is_lagging:
+                    scoped["position"] = 0.0
+            elif (
+                _ma_identity_applied
+                and _title is not None
+                and _since < RECOGNITION_LAG_S
+            ):
+                # MA flipped the identity to a new track on skip, but the engine
+                # may still be recognizing the previous one for a few seconds.
+                # Bridge that lag with wall-clock-since-change (a skipped track
+                # starts at 0) so the timecode can't briefly show the old track.
+                scoped["position"] = max(0.0, _since)
+            elif isinstance(_rec_position, (int, float)):
+                # Engine is the position authority — accurate for the whole
+                # track, whether or not MA is present.
+                scoped["position"] = max(0.0, _rec_position)
+            elif isinstance(_ma_position, (int, float)):
+                # No recognition position at all — fall back to MA, bounded so a
+                # stale elapsed can't show an impossible time.
+                scoped["position"] = max(0.0, min(_ma_position, _since + RECOGNITION_LAG_S))
         except Exception:
             pass
 
