@@ -917,7 +917,33 @@ class MusicAssistantSource(BaseMetadataSource):
             # to idle but already holds the new item at elapsed ~0, while the
             # player object's elapsed still lags on the previous track).
             active_source = getattr(player, "active_source", None)
-            if active_source:
+            # Resolve the active source's human-readable name. This mirrors the
+            # `source` attribute MA publishes on its Home Assistant media_player
+            # entity, which is the authoritative discriminator confirmed from a
+            # live group: MA-native playback reports "… Queue" (app_id
+            # music_assistant, active_queue set) while an external app reports
+            # e.g. "… Spotify Connect" (app_id spotify_connect, active_queue
+            # null). MA exposes the active source id on player.active_source and
+            # the id→name map on player.source_list.
+            active_source_name = None
+            try:
+                for _src in (getattr(player, "source_list", None) or []):
+                    if getattr(_src, "id", None) == active_source:
+                        active_source_name = getattr(_src, "name", None)
+                        break
+            except Exception:
+                pass
+
+            # Decide external vs MA-native using the strongest signal available.
+            # 1) The source NAME (what HA shows): the MA-native queue source name
+            #    ends in "Queue"; anything else is an external app.
+            # 2) Fallback to the source ID mismatch (queue/player id) when no
+            #    name is resolvable.
+            # 3) Fallback to a staleness heuristic when there is no active source
+            #    at all (covers the brief MA-native skip transient).
+            if active_source_name:
+                external_source = not active_source_name.strip().lower().endswith("queue")
+            elif active_source:
                 external_source = active_source not in (
                     queue_id, getattr(player, "player_id", None)
                 )
@@ -930,13 +956,14 @@ class MusicAssistantSource(BaseMetadataSource):
             _cur_item_name = getattr(
                 getattr(queue, "current_item", None), "name", None
             )
-            _sel = (active_source, queue_id, external_source, _cur_item_name)
+            _sel = (active_source, active_source_name, queue_id, external_source, _cur_item_name)
             if _sel != _last_source_select_log:
                 _last_source_select_log = _sel
                 logger.info(
-                    "MA source select: active_source=%r queue_id=%r player_id=%r "
-                    "queue_state=%s external=%s item=%r",
-                    active_source, queue_id, getattr(player, "player_id", None),
+                    "MA source select: active_source=%r source_name=%r queue_id=%r "
+                    "player_id=%r queue_state=%s external=%s item=%r",
+                    active_source, active_source_name, queue_id,
+                    getattr(player, "player_id", None),
                     queue_state, external_source, _cur_item_name,
                 )
             if external_source:
