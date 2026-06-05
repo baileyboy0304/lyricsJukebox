@@ -927,12 +927,17 @@ class MusicAssistantSource(BaseMetadataSource):
                     and (time.time() - queue.elapsed_time_last_updated) >= 5.0
                 )
             global _last_source_select_log
-            _sel = (active_source, queue_id, external_source)
+            _cur_item_name = getattr(
+                getattr(queue, "current_item", None), "name", None
+            )
+            _sel = (active_source, queue_id, external_source, _cur_item_name)
             if _sel != _last_source_select_log:
                 _last_source_select_log = _sel
                 logger.info(
-                    "MA source select: active_source=%r queue_id=%r queue_state=%s "
-                    "external=%s", active_source, queue_id, queue_state, external_source,
+                    "MA source select: active_source=%r queue_id=%r player_id=%r "
+                    "queue_state=%s external=%s item=%r",
+                    active_source, queue_id, getattr(player, "player_id", None),
+                    queue_state, external_source, _cur_item_name,
                 )
             if external_source:
                 pm = getattr(player, "current_media", None)
