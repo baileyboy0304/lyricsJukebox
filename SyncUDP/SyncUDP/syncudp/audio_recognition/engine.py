@@ -252,7 +252,27 @@ class RecognitionEngine:
         position += self.latency_offset
         
         return max(0, position)  # Don't go negative
-    
+
+    def is_position_locked(self) -> bool:
+        """Whether the position has reached stable consensus lock.
+
+        When locked (or paused/frozen) the engine ignores new recognitions and
+        interpolates a fixed anchor, so :meth:`get_current_position` is smooth
+        and accurate. Before the lock — while still validating, or when a
+        track's Shazam offsets keep breaking consensus (anchor deltas far above
+        tolerance) — the position can jump between samples and must NOT drive
+        the on-screen timecode directly.
+        """
+        if self._frozen_position is not None:
+            return True  # paused: the frozen position is stable and correct
+        if self._last_result is None:
+            return False
+        from system_utils.session_config import get_effective_value
+        if not get_effective_value("udp_audio.lock_position", True):
+            return True  # locking disabled → treat the live position as usable
+        lock_after = get_effective_value("udp_audio.lock_position_after", 3)
+        return self._consecutive_good >= lock_after
+
     def get_current_song(self) -> Optional[Dict[str, Any]]:
         """
         Get current song info with Spotify enrichment.
