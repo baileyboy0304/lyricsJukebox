@@ -460,7 +460,14 @@ async def get_current_song_meta_data() -> Optional[dict]:
                             ma_source = _get_hybrid_override_ma_source()
                             if ma_source and getattr(ma_source, "enabled", False) and ma_source.is_available():
                                 ma_meta = await ma_source.get_metadata()
-                                if ma_meta and ma_meta.get("is_playing"):
+                                # Adopt MA identity whenever MA has a track —
+                                # NOT only when is_playing. /current-track keys
+                                # identity off (artist and title) alone, so
+                                # gating this path on is_playing made the two
+                                # endpoints disagree on the current track during
+                                # Spotify Connect transitions (is_playing flaps),
+                                # and the frontend discarded the lyrics.
+                                if ma_meta and ma_meta.get("artist") and ma_meta.get("title"):
                                     ma_artist = ma_meta.get("artist")
                                     ma_title = ma_meta.get("title")
                                     rec_artist = pm_result.get("artist")
