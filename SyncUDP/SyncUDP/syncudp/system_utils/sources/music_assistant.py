@@ -55,6 +55,15 @@ _last_active_player_id: Optional[str] = None  # Track player that was last playi
 _metadata_cache: Optional[Dict[str, Any]] = None
 _cache_time: float = 0
 
+# Short-TTL snapshot of get_metadata() keyed by resolved player id. /current-track
+# and /lyrics arrive as separate requests ~ms apart in the same frontend poll
+# cycle, each making its own MA call. Returning a shared snapshot for a brief
+# window guarantees both observe the SAME track identity — otherwise a Spotify
+# Connect track change caught mid-flap by one endpoint but not the other makes
+# their identities disagree and the frontend discards the lyrics for ~2s.
+_meta_snapshot_cache: Dict[str, tuple] = {}  # player_key -> (timestamp, result)
+_META_SNAPSHOT_TTL = 0.5
+
 # Log rate limiting - prevent spam in logs
 _last_no_player_log: float = 0
 _last_player_not_found_log: float = 0
@@ -747,9 +756,28 @@ class MusicAssistantSource(BaseMetadataSource):
         return mode_map.get(mode_value.lower(), 'off')
     
     async def get_metadata(self) -> Optional[Dict[str, Any]]:
+        """Fetch current-track metadata from Music Assistant.
+
+        Thin short-TTL snapshot wrapper around :meth:`_compute_metadata` so that
+        every caller within one frontend poll cycle (/current-track and /lyrics
+        fire ~ms apart, each making its own MA call) observes the SAME state.
+        Without this, a Spotify Connect track change is caught mid-flap by one
+        endpoint but not the other, their track identities disagree, and the
+        frontend discards the lyrics.
+        """
+        key = self._resolve_player_id() or "<auto>"
+        now = time.time()
+        cached = _meta_snapshot_cache.get(key)
+        if cached is not None and (now - cached[0]) < _META_SNAPSHOT_TTL:
+            return cached[1]
+        result = await self._compute_metadata()
+        _meta_snapshot_cache[key] = (now, result)
+        return result
+
+    async def _compute_metadata(self) -> Optional[Dict[str, Any]]:
         """
         Fetch metadata from Music Assistant.
-        
+
         Gets current track info from the active player's queue.
         Uses cached data if fresh enough, otherwise fetches from server.
         """

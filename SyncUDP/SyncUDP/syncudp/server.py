@@ -513,6 +513,7 @@ def _build_player_track_payload(player_name: str) -> Optional[dict]:
         return payload
 
     position = engine.get_current_position() or 0.0
+    recognition_locked = engine.is_position_locked()
     duration_ms = song.get("duration_ms") or 0
     duration_sec = duration_ms / 1000.0 if duration_ms else 0
     artist = song.get("artist", "")
@@ -532,6 +533,11 @@ def _build_player_track_payload(player_name: str) -> Optional[dict]:
         # Frontend reads `position` (seconds) and `duration_ms` (ms);
         # keep `progress`/`duration` for any legacy callers.
         "position": position,
+        # Whether the engine's position is on a stable consensus lock. Used by
+        # the timeline resolver: an unlocked position can jump between samples
+        # (a track whose Shazam offsets keep breaking consensus) and must not
+        # drive the timecode directly.
+        "_recognition_locked": recognition_locked,
         "progress": int(position * 1000),
         "duration": duration_sec,
         "duration_ms": int(duration_ms),
@@ -725,6 +731,7 @@ async def current_track() -> dict:
         # multi-minute value after a skip. Position is resolved from these two
         # below, after the identity override.
         _rec_position = scoped.get("position")
+        _rec_locked = bool(scoped.get("_recognition_locked"))
         _ma_position = None
         _ma_is_radio = False
         _ma_is_lagging = False
@@ -863,14 +870,32 @@ async def current_track() -> dict:
                 # Bridge that lag with wall-clock-since-change (a skipped track
                 # starts at 0) so the timecode can't briefly show the old track.
                 scoped["position"] = max(0.0, _since)
+            elif _rec_locked and isinstance(_rec_position, (int, float)):
+                # Engine is on a stable consensus lock — its interpolated
+                # position is accurate for the whole track.
+                scoped["position"] = max(0.0, _rec_position)
+            elif _ma_identity_applied and _title is not None:
+                # Engine has NOT locked (e.g. a track whose Shazam offsets keep
+                # breaking consensus). Its raw position jumps between samples, so
+                # don't surface it — MA gave us the track's start, so advance
+                # smoothly by wall-clock-since-change instead.
+                scoped["position"] = max(0.0, _since)
             elif isinstance(_rec_position, (int, float)):
-                # Engine is the position authority — accurate for the whole
-                # track, whether or not MA is present.
+                # No MA identity (recognition-only setup): the engine position is
+                # the only source we have, locked or not.
                 scoped["position"] = max(0.0, _rec_position)
             elif isinstance(_ma_position, (int, float)):
-                # No recognition position at all — fall back to MA, bounded so a
-                # stale elapsed can't show an impossible time.
+                # Nothing from recognition — fall back to MA, bounded so a stale
+                # elapsed can't show an impossible time.
                 scoped["position"] = max(0.0, min(_ma_position, _since + RECOGNITION_LAG_S))
+
+            # Final guard: never report a position past the track's duration
+            # (a jumpy or stale source could otherwise show e.g. 3:22 / 2:36).
+            _dur_ms = scoped.get("duration_ms")
+            if isinstance(_dur_ms, (int, float)) and _dur_ms > 0:
+                _dur_s = _dur_ms / 1000.0
+                if isinstance(scoped.get("position"), (int, float)) and scoped["position"] > _dur_s + 1.0:
+                    scoped["position"] = _dur_s
         except Exception:
             pass
 
