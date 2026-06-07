@@ -228,32 +228,6 @@ async def _build_lyrics_response(player_scope: Optional[str]) -> dict:
     lyrics_data = await get_timed_lyrics_previous_and_next()
     metadata = await get_current_song_meta_data()
 
-    # DIAGNOSTIC (stale-lyrics root cause): compare what the cached, global
-    # orchestrator returned for the lyrics track_id against the scoped player's
-    # LIVE engine song. If these disagree, the discard spam is the orchestrator
-    # cache / "first engine" fallback leaking another player's (or an older)
-    # song into this player's /lyrics response.
-    try:
-        if player_scope:
-            _mgr = _get_player_manager_if_running()
-            _eng = _mgr.get_engine(player_scope) if _mgr else None
-            _live = _eng.get_current_song() if _eng else None
-            _live_id = None
-            if _live and _live.get("artist") and _live.get("title"):
-                from system_utils.helpers import _normalize_track_id as _ntid
-                _live_id = _ntid(_live.get("artist"), _live.get("title"))
-            _meta_id = metadata.get("track_id") if metadata else None
-            _meta_name = f"{metadata.get('artist')} - {metadata.get('title')}" if metadata else None
-            if _live_id and _meta_id and _live_id != _meta_id:
-                logger.info(
-                    "LYRICS-IDENTITY MISMATCH player=%s live_engine=%r (%s) "
-                    "orchestrator=%r (%s) — /lyrics will stamp the orchestrator id",
-                    player_scope, f"{_live.get('artist')} - {_live.get('title')}",
-                    _live_id, _meta_name, _meta_id,
-                )
-    except Exception:
-        pass
-
     # Remove the early return for string type so we can wrap it properly
     # if isinstance(lyrics_data, str):
     #    return {"msg": lyrics_data}
@@ -405,23 +379,28 @@ async def _build_lyrics_response(player_scope: Optional[str]) -> dict:
     # Include track_id so the frontend can detect stale lyrics from the
     # recognition engine (which lags behind MA's instant track identity).
     #
-    # Derive it with the SAME precedence the frontend uses for its expected id
-    # (main.js: prefer the explicit track_id field, else normalize artist+title)
-    # and that /current-track exposes. Re-normalizing the title here instead
-    # produced a different id whenever MA's title carried a suffix the engine's
-    # didn't (e.g. "The Air That I Breathe - 2008 Remaster" vs the clean engine
-    # title) — so every poll was discarded as stale even though lyrics matched.
+    # CRITICAL: this MUST equal what /current-track reports for this player, or
+    # the frontend (which compares the two raw strings) discards the lyrics
+    # forever — the "Loading lyrics…" + stale-discard spam. The previous code
+    # derived it from get_current_song_meta_data(), the cross-player metadata
+    # orchestrator: it caches identity globally and was observed returning a
+    # *different* player's (or a previous) song's id — e.g. /lyrics stamping
+    # "gerryrafferty_rightdowntheline" while the engine was locked on
+    # "ABBA - Dancing Queen". So for a scoped player we use the id /current-track
+    # last recorded (the player's live engine + MA identity), falling back to
+    # the live engine payload, and only fall back to the orchestrator for the
+    # single-instance path where there is no player scope.
     lyrics_track_id = None
-    if metadata:
-        tid = (metadata.get("track_id") or "").strip()
-        if tid:
-            lyrics_track_id = tid
-        else:
-            from system_utils.helpers import _normalize_track_id
-            a = metadata.get("artist", "")
-            t = metadata.get("title", "")
-            if a and t:
-                lyrics_track_id = _normalize_track_id(a, t)
+    if player_scope:
+        lyrics_track_id = _LAST_SCOPED_TRACK_ID.get(player_scope)
+        if lyrics_track_id is None:
+            # /current-track hasn't populated the cache yet (e.g. first poll):
+            # resolve straight from the player's live engine, never the cache.
+            lyrics_track_id = _expected_track_id_from_payload(
+                _build_player_track_payload(player_scope)
+            )
+    if lyrics_track_id is None:
+        lyrics_track_id = _expected_track_id_from_payload(metadata)
 
     return {
         "lyrics": list(lyrics_data),
@@ -525,6 +504,33 @@ _TRACK_SINCE: Dict[str, tuple] = {}  # player_scope -> (title, monotonic_ts trac
 # new track. Within this window the engine may still report the previous track,
 # so the timeline is driven by wall-clock-since-change; after it, by the engine.
 RECOGNITION_LAG_S = 12.0
+
+# The exact track_id /current-track last reported for each player. /lyrics must
+# stamp the IDENTICAL id so the frontend (which compares the two raw strings)
+# accepts the lyrics. Recording it here — rather than re-deriving it in /lyrics
+# from the cross-player metadata orchestrator — is what stops the stale-lyrics
+# discards: the orchestrator caches identity globally and could return another
+# player's (or a previous) song, while this is the player's live engine + MA
+# identity, the single source the frontend already trusts for the current track.
+_LAST_SCOPED_TRACK_ID: Dict[str, Optional[str]] = {}  # player_scope -> track_id
+
+
+def _expected_track_id_from_payload(payload: Optional[dict]) -> Optional[str]:
+    """Derive a track_id from a /current-track-style payload using the SAME
+    precedence the frontend uses for its expected id (main.js): prefer the
+    explicit track_id field, else normalize artist + title. Returns None when
+    the payload has no usable identity yet."""
+    if not payload:
+        return None
+    tid = (payload.get("track_id") or "").strip()
+    if tid:
+        return tid
+    artist = payload.get("artist") or ""
+    title = payload.get("title") or ""
+    if artist and title:
+        from system_utils.helpers import _normalize_track_id
+        return _normalize_track_id(artist, title)
+    return None
 
 
 def _build_player_track_payload(player_name: str) -> Optional[dict]:
@@ -935,6 +941,10 @@ async def current_track() -> dict:
                     scoped["position"] = _dur_s
         except Exception:
             pass
+
+        # Record the exact id we are reporting for this player so /lyrics can
+        # stamp the identical value (the frontend compares the two raw strings).
+        _LAST_SCOPED_TRACK_ID[player_scope] = _expected_track_id_from_payload(scoped)
 
         return scoped
 
