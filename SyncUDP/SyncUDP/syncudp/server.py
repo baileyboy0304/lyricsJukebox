@@ -227,7 +227,33 @@ async def lyrics() -> dict:
 async def _build_lyrics_response(player_scope: Optional[str]) -> dict:
     lyrics_data = await get_timed_lyrics_previous_and_next()
     metadata = await get_current_song_meta_data()
-    
+
+    # DIAGNOSTIC (stale-lyrics root cause): compare what the cached, global
+    # orchestrator returned for the lyrics track_id against the scoped player's
+    # LIVE engine song. If these disagree, the discard spam is the orchestrator
+    # cache / "first engine" fallback leaking another player's (or an older)
+    # song into this player's /lyrics response.
+    try:
+        if player_scope:
+            _mgr = _get_player_manager_if_running()
+            _eng = _mgr.get_engine(player_scope) if _mgr else None
+            _live = _eng.get_current_song() if _eng else None
+            _live_id = None
+            if _live and _live.get("artist") and _live.get("title"):
+                from system_utils.helpers import _normalize_track_id as _ntid
+                _live_id = _ntid(_live.get("artist"), _live.get("title"))
+            _meta_id = metadata.get("track_id") if metadata else None
+            _meta_name = f"{metadata.get('artist')} - {metadata.get('title')}" if metadata else None
+            if _live_id and _meta_id and _live_id != _meta_id:
+                logger.info(
+                    "LYRICS-IDENTITY MISMATCH player=%s live_engine=%r (%s) "
+                    "orchestrator=%r (%s) — /lyrics will stamp the orchestrator id",
+                    player_scope, f"{_live.get('artist')} - {_live.get('title')}",
+                    _live_id, _meta_name, _meta_id,
+                )
+    except Exception:
+        pass
+
     # Remove the early return for string type so we can wrap it properly
     # if isinstance(lyrics_data, str):
     #    return {"msg": lyrics_data}
