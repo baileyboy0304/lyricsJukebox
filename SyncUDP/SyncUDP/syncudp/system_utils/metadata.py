@@ -324,7 +324,11 @@ async def get_current_song_meta_data() -> Optional[dict]:
                                         result["title"] = ma_title
                                         result["artist_name"] = ma_meta.get("artist_name") or ma_artist
                                         result["album"] = ma_meta.get("album") or result.get("album")
-                                        result["track_id"] = ma_meta.get("track_id") or result.get("track_id")
+                                        # Derive track_id from the NEW (MA) title, not the stale
+                                        # recognition track_id — otherwise the id keeps pointing at
+                                        # the previous song while the title shows the new one, and
+                                        # the frontend discards the lyrics as mismatched.
+                                        result["track_id"] = ma_meta.get("track_id") or _normalize_track_id(ma_artist, ma_title)
                                         result["artist_id"] = None
                                         
                                         if ma_meta.get("album_art_url"):
@@ -479,7 +483,11 @@ async def get_current_song_meta_data() -> Optional[dict]:
                                         pm_result["title"] = ma_title
                                         pm_result["artist_name"] = ma_meta.get("artist_name") or ma_artist
                                         pm_result["album"] = ma_meta.get("album") or pm_result.get("album")
-                                        pm_result["track_id"] = ma_meta.get("track_id") or pm_result.get("track_id")
+                                        # Derive track_id from the NEW (MA) title, not the stale
+                                        # recognition track_id — otherwise the id keeps pointing at
+                                        # the previous song while the title shows the new one, and
+                                        # the frontend discards the lyrics as mismatched.
+                                        pm_result["track_id"] = ma_meta.get("track_id") or _normalize_track_id(ma_artist, ma_title)
                                         pm_result["artist_id"] = None
                                         
                                         if ma_meta.get("album_art_url"):
