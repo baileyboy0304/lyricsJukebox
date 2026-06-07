@@ -54,6 +54,18 @@ import { isLatencyBeingAdjusted } from './latency.js';
 // RTT smoothing constant (EMA factor)
 const RTT_SMOOTHING = 0.3;
 
+// Dedup for the lyrics-discard console logs. During a track skip the engine
+// briefly trails MA's identity, so /lyrics returns the old song's lyrics for a
+// few seconds and every ~100ms poll gets discarded — correct behaviour, but it
+// floods the console. Only log when the discard reason/signature changes so
+// each transition logs once instead of dozens of times.
+let _lastLyricsDiscardSig = null;
+function logLyricsDiscard(sig, message) {
+    if (_lastLyricsDiscardSig === sig) return;
+    _lastLyricsDiscardSig = sig;
+    console.log(message);
+}
+
 // Bad sample detection thresholds (relaxed to reduce false positives)
 const BAD_POLL_INTERVAL_THRESHOLD = 330;  // ms - polls taking longer are suspicious (was 180ms)
 const BAD_RTT_MULTIPLIER = 3.5;           // RTT > avg * 3.5 is suspicious (was 2.5x)
@@ -405,13 +417,13 @@ export async function getLyrics(updateBackgroundFn, updateThemeColorFn, updatePr
         // If /current-track moved into recognition-pending/no-music while this
         // request was in flight, do not let old lyric data repopulate the UI.
         if (lastTrackInfo && (lastTrackInfo.recognition_pending || lastTrackInfo.recognition_no_music || !lastTrackInfo.title)) {
-            console.log('[API] Discarding lyrics fetch result (recognition has no current music)');
+            logLyricsDiscard('no-music', '[API] Discarding lyrics fetch result (recognition has no current music)');
             return null;
         }
 
         // Discard stale responses if the track changed while the request was in-flight
         if (expectedTrackId && lastTrackInfo && lastTrackInfo.normalized_track_id && lastTrackInfo.normalized_track_id !== expectedTrackId) {
-            console.log('[API] Discarding stale lyrics fetch result (track changed during flight)');
+            logLyricsDiscard(`inflight:${expectedTrackId}`, '[API] Discarding stale lyrics fetch result (track changed during flight)');
             return null;
         }
 
@@ -419,9 +431,13 @@ export async function getLyrics(updateBackgroundFn, updateThemeColorFn, updatePr
         // expects.  This happens when the recognition engine is still returning
         // lyrics for the old track while MA has already reported the new one.
         if (expectedTrackId && data.track_id && data.track_id !== expectedTrackId) {
-            console.log(`[API] Discarding stale lyrics: server returned for ${data.track_id}, expected ${expectedTrackId}`);
+            logLyricsDiscard(`stale:${data.track_id}->${expectedTrackId}`,
+                `[API] Discarding stale lyrics: server returned for ${data.track_id}, expected ${expectedTrackId}`);
             return null;
         }
+
+        // Lyrics accepted — clear the discard dedup so the next transition logs.
+        _lastLyricsDiscardSig = null;
 
         // Update background if colors are present
         if (data.colors) {
