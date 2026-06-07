@@ -378,13 +378,24 @@ async def _build_lyrics_response(player_scope: Optional[str]) -> dict:
 
     # Include track_id so the frontend can detect stale lyrics from the
     # recognition engine (which lags behind MA's instant track identity).
+    #
+    # Derive it with the SAME precedence the frontend uses for its expected id
+    # (main.js: prefer the explicit track_id field, else normalize artist+title)
+    # and that /current-track exposes. Re-normalizing the title here instead
+    # produced a different id whenever MA's title carried a suffix the engine's
+    # didn't (e.g. "The Air That I Breathe - 2008 Remaster" vs the clean engine
+    # title) — so every poll was discarded as stale even though lyrics matched.
     lyrics_track_id = None
     if metadata:
-        from system_utils.helpers import _normalize_track_id
-        a = metadata.get("artist", "")
-        t = metadata.get("title", "")
-        if a and t:
-            lyrics_track_id = _normalize_track_id(a, t)
+        tid = (metadata.get("track_id") or "").strip()
+        if tid:
+            lyrics_track_id = tid
+        else:
+            from system_utils.helpers import _normalize_track_id
+            a = metadata.get("artist", "")
+            t = metadata.get("title", "")
+            if a and t:
+                lyrics_track_id = _normalize_track_id(a, t)
 
     return {
         "lyrics": list(lyrics_data),
