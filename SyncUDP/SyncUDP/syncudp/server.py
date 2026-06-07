@@ -816,7 +816,12 @@ async def current_track() -> dict:
                         scoped["artist_name"] = ma_meta.get("artist_name") or ma_artist
                         scoped["title"] = ma_title
                         scoped["album"] = ma_meta.get("album") or scoped.get("album")
-                        scoped["track_id"] = ma_meta.get("track_id") or scoped.get("track_id")
+                        # Derive track_id from the NEW (MA) title, not the stale
+                        # recognition track_id — otherwise /current-track exposes
+                        # the previous song's id while showing the new title, and
+                        # it disagrees with /lyrics (frontend discards the lyrics).
+                        from system_utils.helpers import _normalize_track_id as _norm_tid
+                        scoped["track_id"] = ma_meta.get("track_id") or _norm_tid(ma_artist, ma_title)
                         scoped["ma_item_id"] = ma_meta.get("ma_item_id")
                         # Clear stale artist_id from recognition engine. MA doesn't
                         # provide Spotify artist_id, and keeping the old one causes
